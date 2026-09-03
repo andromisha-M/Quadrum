@@ -1,0 +1,4073 @@
+{
+  "name": "Quadrum - Project Expense Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Quadrum Expense Processing Workflow\n\n**What it does:** watches a Google Drive root folder. When a new project\nfolder is dropped in, it creates a PROCESSED and UNCOMPLETED folder, an\n.xlsx tracker and a .md report, then walks the project folder (up to 4\nlevels deep) for invoices/receipts/contracts, extracts the data with a\nlocal LLM (with a 2nd stricter pass when confidence is low), writes rows\nto the .xlsx, logs details to the .md, moves each file to \"Processed\nInvoices\" or UNCOMPLETED, and finally sends a Telegram message + writes a\nsummary paragraph to the .md.\n\n**Before running, open `Project Config` and fill in:**\n- rootFolderId \u2014 the Google Drive folder to watch for new project folders\n- telegramChatId \u2014 your Telegram chat id\n- llmApiUrl / llmModel \u2014 your local llama.cpp server\n\n**Credentials to attach (per node, one-time):** Google Drive OAuth2 on\nevery Google Drive node, Telegram API on the Telegram node. HTTP Request\nnodes calling your local LLM need no auth (LAN endpoint) \u2014 add an API key\nheader yourself if your server requires one.\n\nSee the accompanying README for a full setup + troubleshooting checklist.",
+        "height": 460,
+        "width": 520,
+        "color": 4
+      },
+      "id": "c063e876-92ce-4b1a-b90b-d7233c60a4bc",
+      "name": "Note - Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -3200,
+        -1400
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Folder discovery goes 4 levels deep** (project root + 3 nested\nlevels of subfolders), which comfortably covers structures like\n`Project/Invoices/2025/January`. If you nest deeper than that, duplicate\nthe \"List Level 3 Children\" block (copy its 3 nodes, rename to Level 4)\nand wire it the same way as Level 2\u21923.",
+        "height": 220,
+        "width": 380,
+        "color": 5
+      },
+      "id": "bb6a18f8-3cc4-438c-bdb3-0e60de37350c",
+      "name": "Note - Discovery Depth Limit",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1150,
+        -1750
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Please verify these three things after import (n8n node schemas\nshift between versions):**\n1. `Loop Over Items` node \u2014 confirm which output is \"done\" vs \"loop\" in\n   your version and swap the two connection lines if inverted.\n2. Every `Google Drive` node \u2014 open once, the field pickers should\n   auto-resolve; re-pick anything shown in red.\n3. `Extract from File` nodes \u2014 confirm the Operation dropdown matches\n   the file type (PDF / Spreadsheet / Text) for your n8n version.\n\nEverything is broken into small single-purpose nodes specifically so any\nof this is a 30-second fix rather than a rebuild.",
+        "height": 280,
+        "width": 420,
+        "color": 3
+      },
+      "id": "d61ae7a8-b1c0-424b-97eb-b34acaca126a",
+      "name": "Note - Verify Per Your n8n Version",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1150,
+        2350
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Text branch** (PDF / spreadsheet / document): extract raw text \u2192\nask the LLM to structure it \u2192 if confidence < threshold, ask again with a\nstricter re-check prompt \u2192 keep whichever pass is better, flag\ndisagreements.\n\n**Image branch**: since your LLM is vision-capable, images (and any PDF\nwhose text extraction failed) are sent to it directly as the picture \u2014\nsame two-pass confidence logic.",
+        "height": 240,
+        "width": 360,
+        "color": 6
+      },
+      "id": "7fd0d4e1-47b1-404b-8edc-ff9b6cfb979d",
+      "name": "Note - Text vs Image Extraction",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2150,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "content": "Your n8n setup has no shell/Execute Command access, so this workflow\ncannot rasterize a low-confidence PDF into an image (that needs\npoppler/pdftoppm or an external service). Instead, a low-confidence PDF\ngets a **second, stricter LLM text pass** with arithmetic cross-checking\nas the redundancy step. If you later add an image-conversion service\nreachable over HTTP, splice an HTTP Request node in here (swap point is\nthe \"Check PDF Text Quality\" \u2192 \"Merge Text Sources\" link) to send a\nrendered page image to the vision LLM instead.",
+        "height": 280,
+        "width": 400,
+        "color": 6
+      },
+      "id": "f1e99770-ad3a-4a43-b399-02cf41219f85",
+      "name": "Note - PDF Fallback Limitation",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2650,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "mode": "id",
+          "value": "PUT_YOUR_ROOT_FOLDER_ID_HERE"
+        },
+        "event": "folderCreated",
+        "options": {}
+      },
+      "id": "f0d78e41-de0a-4a11-ae15-e6f77505b586",
+      "name": "Trigger - New Project Folder Dropped",
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [
+        -2600,
+        -1000
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "9a2f0963-584a-4050-9be9-b0cbc63329be",
+              "name": "projectName",
+              "value": "={{ $json.name }}",
+              "type": "string"
+            },
+            {
+              "id": "50cdb10c-a663-4b6e-8de9-00b02ed3b005",
+              "name": "projectFolderId",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "844d2491-84f4-44a6-a7b0-570da1c83eb3",
+              "name": "rootFolderId",
+              "value": "PUT_YOUR_ROOT_FOLDER_ID_HERE",
+              "type": "string"
+            },
+            {
+              "id": "673de054-15db-48ce-bc5c-61745b8f3c19",
+              "name": "telegramChatId",
+              "value": "PUT_YOUR_TELEGRAM_CHAT_ID_HERE",
+              "type": "string"
+            },
+            {
+              "id": "aca14df9-4962-45f4-9f55-2c4eb8a87eaf",
+              "name": "llmApiUrl",
+              "value": "http://10.0.1.11:18080/v1/chat/completions",
+              "type": "string"
+            },
+            {
+              "id": "3797a5c0-19ba-47d5-8a1c-93d21c4aea81",
+              "name": "llmModel",
+              "value": "qwen3.5-35b-a3b",
+              "type": "string"
+            },
+            {
+              "id": "4c5b8bb9-6504-4575-80e4-ab34119f7191",
+              "name": "pdfRenderHelperUrl",
+              "value": "http://10.0.1.11:18880/pdf-to-images-base64",
+              "type": "string"
+            },
+            {
+              "id": "e9e93bef-89a8-4ddb-8cea-56d0fd2fea43",
+              "name": "confidenceThreshold",
+              "value": "={{ 90 }}",
+              "type": "number"
+            },
+            {
+              "id": "958fd9fa-770a-445d-9f0c-742b36049c51",
+              "name": "processedSuffix",
+              "value": " - PROCESSED",
+              "type": "string"
+            },
+            {
+              "id": "d6136fa5-b2f3-4ff5-845b-8679958cf4b7",
+              "name": "uncompletedSuffix",
+              "value": " - UNCOMPLETED",
+              "type": "string"
+            },
+            {
+              "id": "f08d9f74-1fa2-449d-9b92-f1d6ff30f26d",
+              "name": "processedInvoicesName",
+              "value": "Processed Invoices",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {},
+        "includeOtherFields": true
+      },
+      "id": "5d045b67-edd8-4c09-a648-cbbd35cea5eb",
+      "name": "Project Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -2340,
+        -1000
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "={{ \"'\" + $json.projectFolderId + \"' in parents and name = '\" + $json.projectName + $json.processedSuffix + \"' and trashed = false\" }}",
+        "returnAll": true,
+        "filter": {
+          "driveId": {
+            "__rl": true,
+            "mode": "list",
+            "value": "My Drive",
+            "cachedResultName": "My Drive"
+          }
+        },
+        "options": {}
+      },
+      "id": "9342da39-da9e-4586-9f7a-5eef7230c27e",
+      "name": "Search Existing PROCESSED Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -2080,
+        -1000
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "b6e82781-5988-4dfa-8d89-a630a12dacca",
+              "leftValue": "={{ !!$json.id }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "22a0ef7e-3127-49de-98df-0a2aab549ae9",
+      "name": "Already Initialized?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1820,
+        -1000
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "aadea1de-2f69-4016-be9a-8a8a1ad7f7bf",
+      "name": "Stop - Already Initialized",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -1560,
+        -1150
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "create",
+        "name": "={{ $('Project Config').first().json.projectName + $('Project Config').first().json.processedSuffix }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive",
+          "cachedResultName": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Project Config').first().json.projectFolderId }}"
+        },
+        "options": {}
+      },
+      "id": "d231e9ef-2a2f-404f-af08-0ceb07b7251a",
+      "name": "Create PROCESSED Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1560,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "create",
+        "name": "={{ $('Project Config').first().json.projectName + $('Project Config').first().json.uncompletedSuffix }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive",
+          "cachedResultName": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Project Config').first().json.projectFolderId }}"
+        },
+        "options": {}
+      },
+      "id": "2c56cf8b-6f18-4de8-90a4-9f344b52bb17",
+      "name": "Create UNCOMPLETED Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1300,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "create",
+        "name": "={{ $('Project Config').first().json.processedInvoicesName }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive",
+          "cachedResultName": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Create PROCESSED Folder').first().json.id }}"
+        },
+        "options": {}
+      },
+      "id": "ba4cc1a3-7a46-4ff2-bd9d-c67f0767cea6",
+      "name": "Create Processed Invoices Subfolder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1040,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "43f288a3-e3c3-4282-9dc3-045022772613",
+              "name": "projectName",
+              "value": "={{ $('Project Config').first().json.projectName }}",
+              "type": "string"
+            },
+            {
+              "id": "058ed379-ba1c-483c-aecc-04257145349d",
+              "name": "projectFolderId",
+              "value": "={{ $('Project Config').first().json.projectFolderId }}",
+              "type": "string"
+            },
+            {
+              "id": "99d66e91-bf36-4db3-86a8-6358380110d1",
+              "name": "telegramChatId",
+              "value": "={{ $('Project Config').first().json.telegramChatId }}",
+              "type": "string"
+            },
+            {
+              "id": "3aa8220a-c138-4d11-b2f0-bee2e934baae",
+              "name": "llmApiUrl",
+              "value": "={{ $('Project Config').first().json.llmApiUrl }}",
+              "type": "string"
+            },
+            {
+              "id": "1ed7eeda-cdda-4266-a8a0-e6b5c403efaf",
+              "name": "llmModel",
+              "value": "={{ $('Project Config').first().json.llmModel }}",
+              "type": "string"
+            },
+            {
+              "id": "42321286-f406-4f3b-bb75-c11aa2cf82c5",
+              "name": "pdfRenderHelperUrl",
+              "value": "={{ $('Project Config').first().json.pdfRenderHelperUrl }}",
+              "type": "string"
+            },
+            {
+              "id": "fded7302-6cf0-4984-a8e8-4b4e0da85904",
+              "name": "confidenceThreshold",
+              "value": "={{ $('Project Config').first().json.confidenceThreshold }}",
+              "type": "number"
+            },
+            {
+              "id": "dd3338dc-ce33-4948-8e06-46fe6c71025c",
+              "name": "processedFolderId",
+              "value": "={{ $('Create PROCESSED Folder').first().json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "dd904bc4-1455-4b9c-a681-1fe3eca32e8d",
+              "name": "uncompletedFolderId",
+              "value": "={{ $('Create UNCOMPLETED Folder').first().json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "0f2591d9-4042-4c8a-be43-fae5b3b81a81",
+              "name": "processedInvoicesFolderId",
+              "value": "={{ $('Create Processed Invoices Subfolder').first().json.id }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {},
+        "includeOtherFields": false
+      },
+      "id": "d8e949ac-974c-43c9-8047-a15824300f7c",
+      "name": "Folder Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -780,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const ctx = $('Folder Context').first().json;\nconst stamp = new Date().toISOString().replace('T', ' ').substring(0, 19);\nconst text = '# ' + ctx.projectName + ' - Expense Processing Report\\n\\n'\n  + '_Generated: ' + stamp + ' (UTC)_\\n\\n'\n  + 'Every document found in the project folder is logged below: what was read from it,\\n'\n  + 'how confident the extraction was, and anything a human should double-check.\\n\\n'\n  + '---\\n\\n'\n  + '## Invoice log\\n\\n';\nreturn [{\n  json: { mdText: text },\n  binary: {\n    data: {\n      data: Buffer.from(text, 'utf-8').toString('base64'),\n      mimeType: 'text/markdown',\n      fileName: ctx.projectName + '.md',\n      fileExtension: 'md'\n    }\n  }\n}];"
+      },
+      "id": "a4386014-57af-48a0-9778-8d17394b2d70",
+      "name": "Build Initial MD File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "name": "={{ $('Folder Context').first().json.projectName + '.md' }}",
+        "inputDataFieldName": "data",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive",
+          "cachedResultName": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Folder Context').first().json.processedFolderId }}"
+        },
+        "options": {}
+      },
+      "id": "b7abcc4b-75b7-4744-9700-7bce7f4c17cf",
+      "name": "Upload Initial MD File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -260,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "={{ \"'\" + $('Folder Context').first().json.projectFolderId + \"' in parents and trashed = false\" }}",
+        "returnAll": true,
+        "filter": {
+          "driveId": {
+            "__rl": true,
+            "mode": "list",
+            "value": "My Drive",
+            "cachedResultName": "My Drive"
+          }
+        },
+        "options": {}
+      },
+      "id": "28cb030d-c090-4d00-8a9e-0998432b9a6b",
+      "name": "List Project Root Children",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        0,
+        -950
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const ctx = $('Folder Context').first().json;\nconst skip = [ctx.processedFolderId, ctx.uncompletedFolderId, ctx.processedInvoicesFolderId];\nreturn $input.all().filter(item => item.json && item.json.id && !skip.includes(item.json.id));"
+      },
+      "id": "082e356c-add0-441a-b88a-4eed71819095",
+      "name": "Remove Tracking Folders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "d215644b-a001-43a9-9a80-da032c60a051",
+              "leftValue": "={{ $json.mimeType }}",
+              "rightValue": "application/vnd.google-apps.folder",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "afb80ef2-7055-4251-9f54-0c12a7d7a05b",
+      "name": "L0 Files Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        -1100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "dd377a30-b870-4343-bd77-43bf7a7d2a42",
+              "leftValue": "={{ $json.mimeType }}",
+              "rightValue": "application/vnd.google-apps.folder",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "dcd1e833-bb73-46fd-9dc0-c59fabfac7e4",
+      "name": "L0 Folders Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        -800
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "={{ \"'\" + $json.id + \"' in parents and trashed = false\" }}",
+        "returnAll": true,
+        "filter": {
+          "driveId": {
+            "__rl": true,
+            "mode": "list",
+            "value": "My Drive",
+            "cachedResultName": "My Drive"
+          }
+        },
+        "options": {}
+      },
+      "id": "94301c19-64ae-43c8-b8bb-48e2d4565406",
+      "name": "List Level 1 Children",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        780,
+        -800
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "05a123e2-3343-4a86-92be-0ea2580334c3",
+              "leftValue": "={{ $json.mimeType }}",
+              "rightValue": "application/vnd.google-apps.folder",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "526827c8-3193-483a-98d3-48eb910c4d69",
+      "name": "L1 Files Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        1040,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "8e5a14e9-5557-4b34-84da-bf66a1262c87",
+              "leftValue": "={{ $json.mimeType }}",
+              "rightValue": "application/vnd.google-apps.folder",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "646338aa-7970-42e1-b448-b10c1de56618",
+      "name": "L1 Folders Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        1040,
+        -650
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "={{ \"'\" + $json.id + \"' in parents and trashed = false\" }}",
+        "returnAll": true,
+        "filter": {
+          "driveId": {
+            "__rl": true,
+            "mode": "list",
+            "value": "My Drive",
+            "cachedResultName": "My Drive"
+          }
+        },
+        "options": {}
+      },
+      "id": "342df079-0a74-416f-8570-91a2a04b214c",
+      "name": "List Level 2 Children",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1300,
+        -650
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "9015bedb-3e42-477c-a8db-4fd13fb23237",
+              "leftValue": "={{ $json.mimeType }}",
+              "rightValue": "application/vnd.google-apps.folder",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5b4e4664-ddc9-4fa1-9d8f-c948deffdefd",
+      "name": "L2 Files Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        1560,
+        -800
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "db3f855f-6915-457a-a2b4-a502e6db1a3d",
+              "leftValue": "={{ $json.mimeType }}",
+              "rightValue": "application/vnd.google-apps.folder",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4c192554-8b33-445e-88af-c84c9920f6e8",
+      "name": "L2 Folders Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        1560,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "={{ \"'\" + $json.id + \"' in parents and trashed = false\" }}",
+        "returnAll": true,
+        "filter": {
+          "driveId": {
+            "__rl": true,
+            "mode": "list",
+            "value": "My Drive",
+            "cachedResultName": "My Drive"
+          }
+        },
+        "options": {}
+      },
+      "id": "7da8e1f8-6944-4748-8b5d-5748302dcf45",
+      "name": "List Level 3 Children",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1820,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c5c4bbbe-71f2-458d-911b-6c4b45770241",
+              "leftValue": "={{ $json.mimeType }}",
+              "rightValue": "application/vnd.google-apps.folder",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c37cd804-129a-44b3-97e0-9f74e4d80177",
+      "name": "L3 Files Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        2080,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 4
+      },
+      "id": "55617b10-1a3c-4108-a5b5-30b94207023e",
+      "name": "Merge All Discovered Files",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        2340,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const IMAGE = ['jpg','jpeg','png','webp','gif','bmp','tif','tiff','heic'];\nconst SHEET = ['xlsx','xls','csv','ods'];\nconst DOC   = ['docx','doc','rtf','odt','txt','md'];\n\nconst items = $input.all().filter(i => i.json && i.json.id);\nif (items.length === 0) {\n  return [{ json: { hasFiles: false, fileCount: 0 } }];\n}\nconst seen = new Set();\nconst out = [];\nfor (const item of items) {\n  if (seen.has(item.json.id)) continue;\n  seen.add(item.json.id);\n  const name = String(item.json.name || '');\n  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';\n  let category = 'unsupported';\n  if (ext === 'pdf') category = 'pdf';\n  else if (IMAGE.includes(ext)) category = 'image';\n  else if (SHEET.includes(ext)) category = 'spreadsheet';\n  else if (DOC.includes(ext)) category = 'document';\n  out.push({ json: { id: item.json.id, name: name, mimeType: item.json.mimeType || '',\n                     fileExtension: ext, fileCategory: category, hasFiles: true } });\n}\nreturn out;"
+      },
+      "id": "a3072930-d458-4d31-8357-92201b5f8f1c",
+      "name": "Prepare File Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "e9eb6873-fa77-4100-9a70-b79815a5ae4d",
+              "leftValue": "={{ $json.hasFiles }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "517fb29b-3c10-4fbb-a1d7-9cf572c23aa4",
+      "name": "Any Files Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2860,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "dda775f2-82eb-4fac-b3b2-2b1c8daccbec",
+      "name": "Process Files One By One",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        3120,
+        -800
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "b03c20d4-3620-44ed-b390-08a9ebeac9d2",
+              "leftValue": "={{ $json.fileCategory }}",
+              "rightValue": "pdf",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "23614bfd-2b34-4c85-b2dd-9b6deffca993",
+      "name": "Route - Is PDF?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3380,
+        -600
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "f7a781a4-bf78-4670-8a20-d19881465d02",
+              "leftValue": "={{ $json.fileCategory }}",
+              "rightValue": "image",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b0953417-54c1-44bd-a999-1733a2ddbe36",
+      "name": "Route - Is Image?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3380,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "291bd839-50f1-45c7-98a4-3682008e13e4",
+              "leftValue": "={{ $json.fileCategory }}",
+              "rightValue": "spreadsheet",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "52e01ae5-ff78-4d50-a4c9-54cba804d7e2",
+      "name": "Route - Is Spreadsheet?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3380,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "428e77b2-e374-4e46-9da7-6d0d68ea087d",
+              "leftValue": "={{ $json.fileCategory }}",
+              "rightValue": "document",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3f0460ce-a46f-4397-91ae-ef41682cac20",
+      "name": "Route - Is Document?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3380,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "3cdcc8ff-5d5d-4b35-b602-09c112d9c41a",
+      "name": "Download PDF File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        3640,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "643afc42-2b03-40fb-94b3-daa7d08ad3a1",
+      "name": "Extract PDF Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        3900,
+        -700
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const f = $('Process Files One By One').first().json;\nconst inp = $input.first().json || {};\nconst text = String(inp.text || '');\nconst compact = text.replace(/\\s+/g, ' ').trim();\nconst digits = (compact.match(/[0-9]/g) || []).length;\n// A usable invoice text layer has a reasonable amount of text AND numbers.\nconst ok = compact.length >= 80 && digits >= 6;\nreturn [{ json: {\n  fileId: f.id, fileName: f.name, mimeType: f.mimeType, fileCategory: f.fileCategory,\n  sourceType: 'pdf', text: text, extractionOk: ok,\n  extractionNote: ok ? '' : 'PDF has little or no usable text layer (likely a scan) - falling back to page images.'\n} }];"
+      },
+      "id": "0bae43e6-2e36-4ba0-af9e-3dcf48f953fe",
+      "name": "Check PDF Text Quality",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "7fe360b5-00c4-401b-845b-9d39a3e704ca",
+              "leftValue": "={{ $json.extractionOk }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7eb91fd8-fd36-4440-8c12-82ec15699730",
+      "name": "PDF Text Usable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4420,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "f80fb591-cea4-48a9-afb8-fade6b107932",
+      "name": "Download Spreadsheet File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        3640,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "6423fcd0-23fc-49e2-8473-61053d1742dd",
+      "name": "Extract Spreadsheet Rows",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        3900,
+        200
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const f = $('Process Files One By One').first().json;\nconst rows = $input.all().map(i => i.json).filter(r => r && Object.keys(r).length > 0);\nlet text = '';\nif (rows.length > 0) {\n  const headers = Array.from(new Set(rows.flatMap(r => Object.keys(r))));\n  text = headers.join(' | ') + '\\n';\n  for (const r of rows) {\n    text += headers.map(h => (r[h] === undefined || r[h] === null) ? '' : String(r[h])).join(' | ') + '\\n';\n  }\n}\nconst ok = text.trim().length > 0;\nreturn [{ json: {\n  fileId: f.id, fileName: f.name, mimeType: f.mimeType, fileCategory: f.fileCategory,\n  sourceType: 'spreadsheet', text: text, extractionOk: ok,\n  extractionNote: ok ? '' : 'Spreadsheet contained no readable rows.'\n} }];"
+      },
+      "id": "a28182e9-479f-4054-a1a3-dd772cfb03a7",
+      "name": "Stringify Spreadsheet Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "62e6adcf-f9bf-47b8-a754-e904d014f69b",
+      "name": "Download Document File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        3640,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "7d6bf993-a417-434d-a1b6-a0236f0f74c8",
+      "name": "Extract Document Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        3900,
+        600
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const f = $('Process Files One By One').first().json;\nconst inp = $input.first().json || {};\nconst text = String(inp.text || inp.data || '');\nconst compact = text.replace(/\\s+/g, ' ').trim();\nconst ok = compact.length >= 40;\nreturn [{ json: {\n  fileId: f.id, fileName: f.name, mimeType: f.mimeType, fileCategory: f.fileCategory,\n  sourceType: 'document', text: text, extractionOk: ok,\n  extractionNote: ok ? '' : 'Could not read text out of this document (format may not be supported by the Extract from File node in this n8n version). Needs manual handling.'\n} }];"
+      },
+      "id": "f829d5bb-0d8c-436d-85f3-99fd5df261f7",
+      "name": "Check Document Text Quality",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const f = $('Process Files One By One').first().json;\nreturn [{ json: {\n  fileId: f.id, fileName: f.name, mimeType: f.mimeType, fileCategory: f.fileCategory,\n  sourceType: 'unsupported', text: '', extractionOk: false,\n  extractionNote: 'File type \"' + (f.fileExtension || 'unknown') + '\" is not handled automatically (supported: PDF, images, spreadsheets, documents).'\n} }];"
+      },
+      "id": "b5cce09b-8ba8-4fa4-a45e-65fb1295343a",
+      "name": "Mark Unsupported File Type",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        1000
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 4
+      },
+      "id": "e385992a-195d-4fb2-8ae5-64696a0f2617",
+      "name": "Merge Text Sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        4680,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "f07a946c-1e9a-47ec-9ec4-d12ab94815bb",
+              "leftValue": "={{ $json.extractionOk }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c7442934-b724-4ec0-8b11-c0df1514221a",
+      "name": "Text Extracted OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4940,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Folder Context').first().json.llmApiUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Folder Context').first().json.llmModel, temperature: 0.1, max_tokens: 900, messages: [ { role: 'system', content: \"You are a meticulous accounting clerk extracting expense data from the text of an invoice, receipt, contract or other financial document.\\n\\nReturn ONLY a JSON array. One object per expense line item (normally exactly one).\\nEach object must have exactly these keys:\\n  \\\"seller\\\"      - the seller / service provider company name, as printed\\n  \\\"description\\\" - what the expense is for, MAXIMUM 10 words\\n  \\\"net_cost\\\"    - the amount WITHOUT VAT, as a plain number (dot as decimal separator, no thousands separators, no currency)\\n  \\\"vat\\\"         - the VAT amount as a plain number; 0 if the document has no VAT\\n  \\\"date\\\"        - the date on the document, formatted DD.MM.YYYY\\n  \\\"confidence\\\"  - integer 0-100: your honest confidence that EVERY field above is correct and complete\\n  \\\"notes\\\"       - short note about anything uncertain, missing or worth a human check. If everything is clear write exactly: Processed correctly, no issues found.\\n\\nRules:\\n- If only a gross/total and a VAT rate are shown, compute net_cost = total - vat and say so in notes.\\n- If a value is genuinely absent, use 0 for numbers or \\\"\\\" for strings, drop confidence below 90 and explain in notes.\\n- Be strict with confidence: below 90 whenever anything is ambiguous, cut off, blurry or guessed.\\n- No markdown, no code fences, no text outside the JSON array.\" }, { role: 'user', content: 'FILE NAME: ' + $json.fileName + '\\n\\nDOCUMENT TEXT:\\n\\n' + String($json.text).substring(0, 12000) } ] }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "3bfae6df-23d9-4c17-8b90-7b7cca2b88ec",
+      "name": "LLM - Extract From Text (Pass 1)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5200,
+        100
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function tryParseJsonArray(s) {\n  if (!s) return null;\n  let cleaned = String(s).trim();\n  cleaned = cleaned.replace(/^```(json)?/i, '').replace(/```$/,'').trim();\n  const start = cleaned.indexOf('[');\n  const end = cleaned.lastIndexOf(']');\n  if (start !== -1 && end !== -1 && end > start) cleaned = cleaned.substring(start, end + 1);\n  else {\n    const os = cleaned.indexOf('{');\n    const oe = cleaned.lastIndexOf('}');\n    if (os !== -1 && oe !== -1 && oe > os) cleaned = '[' + cleaned.substring(os, oe + 1) + ']';\n  }\n  try { return JSON.parse(cleaned); } catch (e) { return null; }\n}\nconst ctx = $('Text Extracted OK?').first().json;\nconst resp = $input.first().json || {};\nlet raw = '';\ntry { raw = resp.choices[0].message.content; } catch (e) { raw = ''; }\nif (!raw && typeof resp.content === 'string') raw = resp.content;\nconst parsed = tryParseJsonArray(raw);\nconst entries = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);\nconst clean = entries.filter(e => e && typeof e === 'object');\nconst valid = clean.length > 0;\nconst confidence = valid ? Math.min.apply(null, clean.map(e => Number(e.confidence) || 0)) : 0;\nreturn [{ json: Object.assign({}, ctx, {\n  pass1Entries: clean,\n  pass1Confidence: confidence,\n  pass1Valid: valid,\n  pass1Raw: String(raw).substring(0, 2000)\n}) }];"
+      },
+      "id": "99a337fb-6950-4547-8efd-f5fb157f3009",
+      "name": "Parse LLM Response (Text Pass 1)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5460,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "26654e6b-2c2f-4c97-9b8b-0b92c09d1f54",
+              "leftValue": "={{ $json.pass1Valid && $json.pass1Confidence >= $('Folder Context').first().json.confidenceThreshold }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "88126782-0b6d-4cd6-94da-24f55d6b99ff",
+      "name": "Text Pass 1 Confident?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5720,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const d = $input.first().json;\nconst entries = d.pass1Entries || [];\nconst confidence = Number(d.pass1Confidence) || 0;\nconst extraNote = 'Read from the document text layer, confident on the first pass.';\nreturn entries.map(e => ({ json: {\n  fileId: d.fileId, fileName: d.fileName, sourceType: d.sourceType,\n  seller: String(e.seller || ''),\n  description: String(e.description || '').split(/\\s+/).slice(0, 10).join(' '),\n  netCost: Number(e.net_cost) || 0,\n  vat: Number(e.vat) || 0,\n  invoiceDate: String(e.date || ''),\n  confidence: confidence,\n  notes: [String(e.notes || ''), extraNote].filter(Boolean).join(' ')\n} }));"
+      },
+      "id": "de087e93-a334-4690-8259-dececced6dcc",
+      "name": "Build Success Entries (Text Pass 1)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5980,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "af65ecb5-01a3-4662-b05f-85d811020402",
+              "leftValue": "={{ $json.sourceType }}",
+              "rightValue": "pdf",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "187a71da-90cf-4103-835a-cfb16b2aae89",
+      "name": "Low Confidence - Is It A PDF?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5980,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Folder Context').first().json.llmApiUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Folder Context').first().json.llmModel, temperature: 0.1, max_tokens: 900, messages: [ { role: 'system', content: \"You are re-checking an extraction that came back with LOW CONFIDENCE. Read the text again very carefully, digit by digit for every number. Verify that net_cost + vat equals any total printed on the document, and recompute if it does not. Only report confidence 90 or above if you are genuinely certain of every single field.\\n\\nReturn ONLY a JSON array. One object per expense line item (normally exactly one).\\nEach object must have exactly these keys:\\n  \\\"seller\\\"      - the seller / service provider company name, as printed\\n  \\\"description\\\" - what the expense is for, MAXIMUM 10 words\\n  \\\"net_cost\\\"    - the amount WITHOUT VAT, as a plain number (dot as decimal separator, no thousands separators, no currency)\\n  \\\"vat\\\"         - the VAT amount as a plain number; 0 if the document has no VAT\\n  \\\"date\\\"        - the date on the document, formatted DD.MM.YYYY\\n  \\\"confidence\\\"  - integer 0-100: your honest confidence that EVERY field above is correct and complete\\n  \\\"notes\\\"       - short note about anything uncertain, missing or worth a human check. If everything is clear write exactly: Processed correctly, no issues found.\\n\\nRules:\\n- If only a gross/total and a VAT rate are shown, compute net_cost = total - vat and say so in notes.\\n- If a value is genuinely absent, use 0 for numbers or \\\"\\\" for strings, drop confidence below 90 and explain in notes.\\n- Be strict with confidence: below 90 whenever anything is ambiguous, cut off, blurry or guessed.\\n- No markdown, no code fences, no text outside the JSON array.\" }, { role: 'user', content: 'FILE NAME: ' + $json.fileName + '\\n\\nDOCUMENT TEXT:\\n\\n' + String($json.text).substring(0, 12000) } ] }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "3a2341b6-2f4e-4e7e-9e19-fcfc7080eaa9",
+      "name": "LLM - Extract From Text (Pass 2 Strict)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6240,
+        500
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function tryParseJsonArray(s) {\n  if (!s) return null;\n  let cleaned = String(s).trim();\n  cleaned = cleaned.replace(/^```(json)?/i, '').replace(/```$/,'').trim();\n  const start = cleaned.indexOf('[');\n  const end = cleaned.lastIndexOf(']');\n  if (start !== -1 && end !== -1 && end > start) cleaned = cleaned.substring(start, end + 1);\n  else {\n    const os = cleaned.indexOf('{');\n    const oe = cleaned.lastIndexOf('}');\n    if (os !== -1 && oe !== -1 && oe > os) cleaned = '[' + cleaned.substring(os, oe + 1) + ']';\n  }\n  try { return JSON.parse(cleaned); } catch (e) { return null; }\n}\nconst ctx = $('Low Confidence - Is It A PDF?').first().json;\nconst resp = $input.first().json || {};\nlet raw = '';\ntry { raw = resp.choices[0].message.content; } catch (e) { raw = ''; }\nif (!raw && typeof resp.content === 'string') raw = resp.content;\nconst parsed = tryParseJsonArray(raw);\nconst entries = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);\nconst clean = entries.filter(e => e && typeof e === 'object');\nconst valid = clean.length > 0;\nconst confidence = valid ? Math.min.apply(null, clean.map(e => Number(e.confidence) || 0)) : 0;\nreturn [{ json: Object.assign({}, ctx, {\n  pass2Entries: clean,\n  pass2Confidence: confidence,\n  pass2Valid: valid,\n  pass2Raw: String(raw).substring(0, 2000)\n}) }];"
+      },
+      "id": "2a73f4cd-65eb-4cd6-b1ac-65c93ad53924",
+      "name": "Parse LLM Response (Text Pass 2)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6500,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const d = $input.first().json;\nconst threshold = Number($('Folder Context').first().json.confidenceThreshold) || 90;\nlet finalEntries = [], finalConfidence = 0, note = '';\nif (d.pass2Valid && Number(d.pass2Confidence) >= Number(d.pass1Confidence || 0)) {\n  finalEntries = d.pass2Entries; finalConfidence = Number(d.pass2Confidence);\n  note = 'Second (strict re-check) pass used.';\n} else if (d.pass1Valid) {\n  finalEntries = d.pass1Entries; finalConfidence = Number(d.pass1Confidence);\n  note = 'First pass used - the strict re-check did not improve confidence.';\n} else {\n  note = 'Both extraction passes failed to return usable data.';\n}\nif (d.pass1Valid && d.pass2Valid && d.pass1Entries.length && d.pass2Entries.length) {\n  const a = Number(d.pass1Entries[0].net_cost) || 0;\n  const b = Number(d.pass2Entries[0].net_cost) || 0;\n  const va = Number(d.pass1Entries[0].vat) || 0;\n  const vb = Number(d.pass2Entries[0].vat) || 0;\n  if (Math.abs(a - b) > 0.01 || Math.abs(va - vb) > 0.01) {\n    note += ' WARNING: the two passes disagree (net ' + a + ' vs ' + b + ', VAT ' + va + ' vs ' + vb + ') - needs a human check.';\n    finalConfidence = Math.min(finalConfidence, threshold - 1);\n  } else {\n    note += ' Both passes agree on the amounts.';\n  }\n}\nreturn [{ json: Object.assign({}, d, { finalEntries, finalConfidence, finalNote: note }) }];"
+      },
+      "id": "72f30e14-d48c-4784-86c9-94c841dd11b0",
+      "name": "Pick Best Text Extraction",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6760,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "950ad091-3c7c-489a-98e4-9cb2fd7a3f76",
+              "leftValue": "={{ $json.finalConfidence >= $('Folder Context').first().json.confidenceThreshold }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7c57e047-1a30-45aa-8417-a4f364902205",
+      "name": "Text Final Confident?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        7020,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const d = $input.first().json;\nconst entries = d.finalEntries || [];\nconst confidence = Number(d.finalConfidence) || 0;\nconst extraNote = d.finalNote || '';\nreturn entries.map(e => ({ json: {\n  fileId: d.fileId, fileName: d.fileName, sourceType: d.sourceType,\n  seller: String(e.seller || ''),\n  description: String(e.description || '').split(/\\s+/).slice(0, 10).join(' '),\n  netCost: Number(e.net_cost) || 0,\n  vat: Number(e.vat) || 0,\n  invoiceDate: String(e.date || ''),\n  confidence: confidence,\n  notes: [String(e.notes || ''), extraNote].filter(Boolean).join(' ')\n} }));"
+      },
+      "id": "f26cf1f7-a383-4d69-af9a-f939c3a385e0",
+      "name": "Build Success Entries (Text Final)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7280,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 2
+      },
+      "id": "5f23d287-627e-480f-ad35-15b09dc22143",
+      "name": "Merge PDF Fallback Entry",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        4680,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Process Files One By One').first().json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "69aaebd9-9387-498d-bfaa-334bef078466",
+      "name": "Download PDF For Rendering",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        4940,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// getBinaryDataBuffer works whether n8n keeps binaries in memory or on disk.\nlet base64 = '';\ntry {\n  const buffer = await this.helpers.getBinaryDataBuffer(0, 'data');\n  base64 = buffer.toString('base64');\n} catch (e) {\n  base64 = '';\n}\nreturn [{ json: { pdfBase64: base64, pdfBytes: base64.length } }];"
+      },
+      "id": "870493fb-b463-4fe0-a099-eadd81c70a61",
+      "name": "PDF Binary To Base64",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5200,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Folder Context').first().json.pdfRenderHelperUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ base64: $json.pdfBase64, dpi: 200, max_pages: 3 }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "098bbced-4c69-4c97-aca4-dd9e3053b222",
+      "name": "Render PDF Pages To Images",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5460,
+        -900
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const f = $('Process Files One By One').first().json;\n// input is the JSON response from the render helper container\n\nconst resp = $input.first().json || {};\nconst images = Array.isArray(resp.images) ? resp.images : [];\nconst urls = images.map(img => 'data:' + (img.mimeType || 'image/png') + ';base64,' + img.base64);\nreturn [{ json: {\n  fileId: f.id, fileName: f.name, mimeType: f.mimeType, sourceType: 'pdf-rendered',\n  imageDataUrls: urls,\n  imageOk: urls.length > 0,\n  imageNote: urls.length > 0\n    ? ('PDF text was unreliable, so ' + urls.length + ' rendered page image(s) were read by the vision model instead.')\n    : ('The PDF render helper returned no images (' + (resp.detail || resp.message || 'no response') + '). Check that the helper container is running and reachable.')\n} }];"
+      },
+      "id": "1261edde-d6d3-4d23-bbd7-f8ce302629ba",
+      "name": "Build Image Payload From Rendered PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5720,
+        -900
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "78fb61f0-c04c-49bd-84ed-dae61e5dd05f",
+      "name": "Download Image File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        3640,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const f = $('Process Files One By One').first().json;\nconst meta = ($input.first().binary || {}).data || {};\nlet base64 = '';\ntry {\n  const buffer = await this.helpers.getBinaryDataBuffer(0, 'data');\n  base64 = buffer.toString('base64');\n} catch (e) {\n  base64 = '';\n}\nconst ok = base64.length > 0;\nconst mime = meta.mimeType || 'image/png';\nreturn [{ json: {\n  fileId: f.id, fileName: f.name, mimeType: f.mimeType, sourceType: 'image',\n  imageDataUrls: ok ? ['data:' + mime + ';base64,' + base64] : [],\n  imageOk: ok,\n  imageNote: ok ? 'Image read directly by the vision model.' : 'Could not read the image file contents from Google Drive.'\n} }];"
+      },
+      "id": "cf341484-2810-4b7d-8f61-75b944646516",
+      "name": "Build Image Payload From File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3900,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 2
+      },
+      "id": "d0ee3aa5-ab1a-4d0e-ba9e-a1bb15b96ba2",
+      "name": "Merge Image Sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        5720,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "d3073bb3-611d-4488-b6c8-3aa428861bb9",
+              "leftValue": "={{ $json.imageOk }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a0e8a161-232b-4815-8e27-5cef244dcdbb",
+      "name": "Image Payload OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5980,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Folder Context').first().json.llmApiUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Folder Context').first().json.llmModel, temperature: 0.1, max_tokens: 900, messages: [ { role: 'system', content: \"You are a meticulous accounting clerk reading images of an invoice, receipt or financial document. Read every number and label carefully from the image(s).\\n\\nReturn ONLY a JSON array. One object per expense line item (normally exactly one).\\nEach object must have exactly these keys:\\n  \\\"seller\\\"      - the seller / service provider company name, as printed\\n  \\\"description\\\" - what the expense is for, MAXIMUM 10 words\\n  \\\"net_cost\\\"    - the amount WITHOUT VAT, as a plain number (dot as decimal separator, no thousands separators, no currency)\\n  \\\"vat\\\"         - the VAT amount as a plain number; 0 if the document has no VAT\\n  \\\"date\\\"        - the date on the document, formatted DD.MM.YYYY\\n  \\\"confidence\\\"  - integer 0-100: your honest confidence that EVERY field above is correct and complete\\n  \\\"notes\\\"       - short note about anything uncertain, missing or worth a human check. If everything is clear write exactly: Processed correctly, no issues found.\\n\\nRules:\\n- If only a gross/total and a VAT rate are shown, compute net_cost = total - vat and say so in notes.\\n- If a value is genuinely absent, use 0 for numbers or \\\"\\\" for strings, drop confidence below 90 and explain in notes.\\n- Be strict with confidence: below 90 whenever anything is ambiguous, cut off, blurry or guessed.\\n- No markdown, no code fences, no text outside the JSON array.\" }, { role: 'user', content: [ { type: 'text', text: \"Read this financial document and extract the expense data.\" + ' FILE NAME: ' + $json.fileName } ].concat(($json.imageDataUrls || []).map(u => ({ type: 'image_url', image_url: { url: u } }))) } ] }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "f924bb8d-4446-4e7b-91cf-f21cfe309fb4",
+      "name": "LLM - Extract From Image (Pass 1)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6240,
+        -600
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function tryParseJsonArray(s) {\n  if (!s) return null;\n  let cleaned = String(s).trim();\n  cleaned = cleaned.replace(/^```(json)?/i, '').replace(/```$/,'').trim();\n  const start = cleaned.indexOf('[');\n  const end = cleaned.lastIndexOf(']');\n  if (start !== -1 && end !== -1 && end > start) cleaned = cleaned.substring(start, end + 1);\n  else {\n    const os = cleaned.indexOf('{');\n    const oe = cleaned.lastIndexOf('}');\n    if (os !== -1 && oe !== -1 && oe > os) cleaned = '[' + cleaned.substring(os, oe + 1) + ']';\n  }\n  try { return JSON.parse(cleaned); } catch (e) { return null; }\n}\nconst ctx = $('Image Payload OK?').first().json;\nconst resp = $input.first().json || {};\nlet raw = '';\ntry { raw = resp.choices[0].message.content; } catch (e) { raw = ''; }\nif (!raw && typeof resp.content === 'string') raw = resp.content;\nconst parsed = tryParseJsonArray(raw);\nconst entries = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);\nconst clean = entries.filter(e => e && typeof e === 'object');\nconst valid = clean.length > 0;\nconst confidence = valid ? Math.min.apply(null, clean.map(e => Number(e.confidence) || 0)) : 0;\nreturn [{ json: Object.assign({}, ctx, {\n  pass1Entries: clean,\n  pass1Confidence: confidence,\n  pass1Valid: valid,\n  pass1Raw: String(raw).substring(0, 2000)\n}) }];"
+      },
+      "id": "7f41f444-a09f-4ed9-8c08-3e4deeeb7c05",
+      "name": "Parse LLM Response (Image Pass 1)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6500,
+        -600
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "998d9d6a-e96b-441f-999b-4cd9dc22a01f",
+              "leftValue": "={{ $json.pass1Valid && $json.pass1Confidence >= $('Folder Context').first().json.confidenceThreshold }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "81117694-33d0-43e2-9ae3-4ccee394dbcd",
+      "name": "Image Pass 1 Confident?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        6760,
+        -600
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const d = $input.first().json;\nconst entries = d.pass1Entries || [];\nconst confidence = Number(d.pass1Confidence) || 0;\nconst extraNote = d.imageNote || '';\nreturn entries.map(e => ({ json: {\n  fileId: d.fileId, fileName: d.fileName, sourceType: d.sourceType,\n  seller: String(e.seller || ''),\n  description: String(e.description || '').split(/\\s+/).slice(0, 10).join(' '),\n  netCost: Number(e.net_cost) || 0,\n  vat: Number(e.vat) || 0,\n  invoiceDate: String(e.date || ''),\n  confidence: confidence,\n  notes: [String(e.notes || ''), extraNote].filter(Boolean).join(' ')\n} }));"
+      },
+      "id": "5de8748e-f2c4-4f4c-a072-2dff7c53904e",
+      "name": "Build Success Entries (Image Pass 1)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7020,
+        -800
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Folder Context').first().json.llmApiUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Folder Context').first().json.llmModel, temperature: 0.1, max_tokens: 900, messages: [ { role: 'system', content: \"You are re-checking an image extraction that came back with LOW CONFIDENCE. Look again very closely at every digit, the seller name and the date. Verify net_cost + vat against any printed total. Only report confidence 90 or above if you are genuinely certain of every field.\\n\\nReturn ONLY a JSON array. One object per expense line item (normally exactly one).\\nEach object must have exactly these keys:\\n  \\\"seller\\\"      - the seller / service provider company name, as printed\\n  \\\"description\\\" - what the expense is for, MAXIMUM 10 words\\n  \\\"net_cost\\\"    - the amount WITHOUT VAT, as a plain number (dot as decimal separator, no thousands separators, no currency)\\n  \\\"vat\\\"         - the VAT amount as a plain number; 0 if the document has no VAT\\n  \\\"date\\\"        - the date on the document, formatted DD.MM.YYYY\\n  \\\"confidence\\\"  - integer 0-100: your honest confidence that EVERY field above is correct and complete\\n  \\\"notes\\\"       - short note about anything uncertain, missing or worth a human check. If everything is clear write exactly: Processed correctly, no issues found.\\n\\nRules:\\n- If only a gross/total and a VAT rate are shown, compute net_cost = total - vat and say so in notes.\\n- If a value is genuinely absent, use 0 for numbers or \\\"\\\" for strings, drop confidence below 90 and explain in notes.\\n- Be strict with confidence: below 90 whenever anything is ambiguous, cut off, blurry or guessed.\\n- No markdown, no code fences, no text outside the JSON array.\" }, { role: 'user', content: [ { type: 'text', text: \"Re-read this financial document very carefully.\" + ' FILE NAME: ' + $json.fileName } ].concat(($json.imageDataUrls || []).map(u => ({ type: 'image_url', image_url: { url: u } }))) } ] }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "0e60e8ff-cf46-41ec-9b5b-428960c3ee10",
+      "name": "LLM - Extract From Image (Pass 2 Strict)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7020,
+        -400
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function tryParseJsonArray(s) {\n  if (!s) return null;\n  let cleaned = String(s).trim();\n  cleaned = cleaned.replace(/^```(json)?/i, '').replace(/```$/,'').trim();\n  const start = cleaned.indexOf('[');\n  const end = cleaned.lastIndexOf(']');\n  if (start !== -1 && end !== -1 && end > start) cleaned = cleaned.substring(start, end + 1);\n  else {\n    const os = cleaned.indexOf('{');\n    const oe = cleaned.lastIndexOf('}');\n    if (os !== -1 && oe !== -1 && oe > os) cleaned = '[' + cleaned.substring(os, oe + 1) + ']';\n  }\n  try { return JSON.parse(cleaned); } catch (e) { return null; }\n}\nconst ctx = $('Image Pass 1 Confident?').first().json;\nconst resp = $input.first().json || {};\nlet raw = '';\ntry { raw = resp.choices[0].message.content; } catch (e) { raw = ''; }\nif (!raw && typeof resp.content === 'string') raw = resp.content;\nconst parsed = tryParseJsonArray(raw);\nconst entries = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);\nconst clean = entries.filter(e => e && typeof e === 'object');\nconst valid = clean.length > 0;\nconst confidence = valid ? Math.min.apply(null, clean.map(e => Number(e.confidence) || 0)) : 0;\nreturn [{ json: Object.assign({}, ctx, {\n  pass2Entries: clean,\n  pass2Confidence: confidence,\n  pass2Valid: valid,\n  pass2Raw: String(raw).substring(0, 2000)\n}) }];"
+      },
+      "id": "358cc06e-16ad-4676-a190-38a23f01118b",
+      "name": "Parse LLM Response (Image Pass 2)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7280,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const d = $input.first().json;\nconst threshold = Number($('Folder Context').first().json.confidenceThreshold) || 90;\nlet finalEntries = [], finalConfidence = 0, note = '';\nif (d.pass2Valid && Number(d.pass2Confidence) >= Number(d.pass1Confidence || 0)) {\n  finalEntries = d.pass2Entries; finalConfidence = Number(d.pass2Confidence);\n  note = 'Second (strict re-check) pass used.';\n} else if (d.pass1Valid) {\n  finalEntries = d.pass1Entries; finalConfidence = Number(d.pass1Confidence);\n  note = 'First pass used - the strict re-check did not improve confidence.';\n} else {\n  note = 'Both extraction passes failed to return usable data.';\n}\nif (d.pass1Valid && d.pass2Valid && d.pass1Entries.length && d.pass2Entries.length) {\n  const a = Number(d.pass1Entries[0].net_cost) || 0;\n  const b = Number(d.pass2Entries[0].net_cost) || 0;\n  const va = Number(d.pass1Entries[0].vat) || 0;\n  const vb = Number(d.pass2Entries[0].vat) || 0;\n  if (Math.abs(a - b) > 0.01 || Math.abs(va - vb) > 0.01) {\n    note += ' WARNING: the two passes disagree (net ' + a + ' vs ' + b + ', VAT ' + va + ' vs ' + vb + ') - needs a human check.';\n    finalConfidence = Math.min(finalConfidence, threshold - 1);\n  } else {\n    note += ' Both passes agree on the amounts.';\n  }\n}\nreturn [{ json: Object.assign({}, d, { finalEntries, finalConfidence, finalNote: note }) }];"
+      },
+      "id": "f93f2e8a-5f09-4f06-b2bf-0a0fafd2f186",
+      "name": "Pick Best Image Extraction",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7540,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "e9aa5aa4-36a0-470e-857e-281f7b700172",
+              "leftValue": "={{ $json.finalConfidence >= $('Folder Context').first().json.confidenceThreshold }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c755f196-f32d-4274-a695-952181e92230",
+      "name": "Image Final Confident?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        7800,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const d = $input.first().json;\nconst entries = d.finalEntries || [];\nconst confidence = Number(d.finalConfidence) || 0;\nconst extraNote = ((d.imageNote || '') + ' ' + (d.finalNote || '')).trim();\nreturn entries.map(e => ({ json: {\n  fileId: d.fileId, fileName: d.fileName, sourceType: d.sourceType,\n  seller: String(e.seller || ''),\n  description: String(e.description || '').split(/\\s+/).slice(0, 10).join(' '),\n  netCost: Number(e.net_cost) || 0,\n  vat: Number(e.vat) || 0,\n  invoiceDate: String(e.date || ''),\n  confidence: confidence,\n  notes: [String(e.notes || ''), extraNote].filter(Boolean).join(' ')\n} }));"
+      },
+      "id": "1a981bcb-e73c-4188-bfd7-27361bd9be48",
+      "name": "Build Success Entries (Image Final)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8060,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const d = $input.first().json;\nconst threshold = $('Folder Context').first().json.confidenceThreshold;\nreturn [{ json: {\n  fileId: d.fileId, fileName: d.fileName, sourceType: d.sourceType || 'unknown',\n  bestGuess: null,\n  reason: d.extractionNote || 'The file could not be read for processing.'\n} }];"
+      },
+      "id": "55f4a51d-9e8f-4f06-97c0-1991c3a5b6d9",
+      "name": "Failure - Could Not Read File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5200,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const d = $input.first().json;\nconst threshold = $('Folder Context').first().json.confidenceThreshold;\nreturn [{ json: {\n  fileId: d.fileId, fileName: d.fileName, sourceType: d.sourceType || 'unknown',\n  bestGuess: (d.finalEntries && d.finalEntries.length) ? d.finalEntries[0] : null,\n  reason: 'Two extraction passes could not reach ' + threshold + '% confidence (best was ' + d.finalConfidence + '%). ' + (d.finalNote || '')\n} }];"
+      },
+      "id": "fac47824-6640-405c-94b8-7c68c6e20284",
+      "name": "Failure - Low Confidence (Text)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7280,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const d = $input.first().json;\nconst threshold = $('Folder Context').first().json.confidenceThreshold;\nreturn [{ json: {\n  fileId: d.fileId, fileName: d.fileName, sourceType: d.sourceType || 'unknown',\n  bestGuess: null,\n  reason: d.imageNote || 'No page images could be produced for this file.'\n} }];"
+      },
+      "id": "d12166ad-29a0-4a52-971e-7a362899c021",
+      "name": "Failure - No Usable Images",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6240,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const d = $input.first().json;\nconst threshold = $('Folder Context').first().json.confidenceThreshold;\nreturn [{ json: {\n  fileId: d.fileId, fileName: d.fileName, sourceType: d.sourceType || 'unknown',\n  bestGuess: (d.finalEntries && d.finalEntries.length) ? d.finalEntries[0] : null,\n  reason: 'Two vision passes could not reach ' + threshold + '% confidence (best was ' + d.finalConfidence + '%). ' + (d.finalNote || '')\n} }];"
+      },
+      "id": "a3eb2f8c-cacb-4394-840d-d098f54d1993",
+      "name": "Failure - Low Confidence (Image)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8060,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 4
+      },
+      "id": "f412d219-d508-4328-86eb-9831ef05dc8b",
+      "name": "Merge Failure Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        8320,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 4
+      },
+      "id": "7790ccba-a2c6-456a-87fb-6928751607c4",
+      "name": "Merge Success Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        8320,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Amounts are written exactly as asked: no thousands separator, comma before the cents.\nfunction fmt(value) {\n  const num = Number(value) || 0;\n  const parts = Math.abs(num).toFixed(2).split('.');\n  return (num < 0 ? '-' : '') + parts[0] + ',' + parts[1];\n}\nconst items = $input.all().map(i => i.json);\nconst newRows = items.map(e => ({\n  'Seller / Service Provider': e.seller || '',\n  'Description': e.description || '',\n  'Net Cost': fmt(e.netCost),\n  'VAT': fmt(e.vat),\n  'Date': e.invoiceDate || ''\n}));\nconst first = items[0] || {};\nreturn [{ json: {\n  fileId: first.fileId, fileName: first.fileName, sourceType: first.sourceType,\n  confidence: first.confidence, notes: items.map(i => i.notes).filter(Boolean).join(' | '),\n  entryCount: newRows.length,\n  netTotal: items.reduce((s, i) => s + (Number(i.netCost) || 0), 0),\n  vatTotal: items.reduce((s, i) => s + (Number(i.vat) || 0), 0),\n  newRows: newRows\n} }];"
+      },
+      "id": "6d758ed2-35ea-41e5-a5c3-dbb110e070f7",
+      "name": "Format Rows For Spreadsheet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8580,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "={{ \"'\" + $('Folder Context').first().json.processedFolderId + \"' in parents and name = '\" + $('Folder Context').first().json.projectName + \".xlsx' and trashed = false\" }}",
+        "returnAll": true,
+        "filter": {
+          "driveId": {
+            "__rl": true,
+            "mode": "list",
+            "value": "My Drive",
+            "cachedResultName": "My Drive"
+          }
+        },
+        "options": {}
+      },
+      "id": "a01764cb-e3e8-482b-8af9-4795eab2f7b5",
+      "name": "Search Project XLSX",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        8840,
+        -700
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "60d28ba7-d6df-4a9a-951b-dbb53c44d7b1",
+              "leftValue": "={{ !!$json.id }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "eac55406-1a15-4860-a54b-0cf82b156982",
+      "name": "XLSX Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        9100,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "36196776-778d-4937-b9cf-abbc4adbc614",
+      "name": "Download Existing XLSX",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        9360,
+        -850
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "1da2f334-8687-436c-9bff-694f5b891a55",
+      "name": "Extract Existing XLSX Rows",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        9620,
+        -850
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return [{ json: { __placeholder: true } }];"
+      },
+      "id": "c170b8e0-c1d4-4553-9f76-9f3ed9b328a5",
+      "name": "No Existing Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9360,
+        -550
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 2
+      },
+      "id": "bc78b4c1-b358-4e66-a04f-bf163ff35f92",
+      "name": "Merge Existing Rows",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        9880,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const COLUMNS = ['Seller / Service Provider', 'Description', 'Net Cost', 'VAT', 'Date'];\nconst existing = $input.all()\n  .map(i => i.json)\n  .filter(r => r && !r.__placeholder && Object.keys(r).length > 0)\n  .map(r => {\n    const row = {};\n    for (const c of COLUMNS) row[c] = r[c] === undefined || r[c] === null ? '' : String(r[c]);\n    return row;\n  });\nconst newRows = $('Format Rows For Spreadsheet').first().json.newRows || [];\nreturn existing.concat(newRows).map(row => ({ json: row }));"
+      },
+      "id": "d00c41a8-e53c-4b39-8566-c857f83eaf2e",
+      "name": "Combine Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10140,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "fileName": "={{ $('Folder Context').first().json.projectName + '.xlsx' }}"
+        }
+      },
+      "id": "c88bc8cb-7822-405d-acb2-cd0afbc48f4a",
+      "name": "Convert Rows To XLSX",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        10400,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "7f076447-5927-451d-b8f4-f9bab0903a0d",
+              "leftValue": "={{ !!$('Search Project XLSX').first().json.id }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1f2f45f4-1e54-49d7-acd4-aad8bf967b18",
+      "name": "XLSX Existed Before?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        10660,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "update",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Search Project XLSX').first().json.id }}"
+        },
+        "changeFileContent": true,
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "id": "2b806cae-8d43-44ad-b56d-24f9c7347068",
+      "name": "Update Project XLSX",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        10920,
+        -850
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "name": "={{ $('Folder Context').first().json.projectName + '.xlsx' }}",
+        "inputDataFieldName": "data",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive",
+          "cachedResultName": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Folder Context').first().json.processedFolderId }}"
+        },
+        "options": {}
+      },
+      "id": "c448f818-9cac-427e-bf41-0d53e86c610f",
+      "name": "Create Project XLSX",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        10920,
+        -550
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 2
+      },
+      "id": "f07a6a35-f317-4b8c-801b-02ce11acb37a",
+      "name": "Merge After XLSX Write",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        11180,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Upload Initial MD File').first().json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "bec2760d-ed63-4a4a-9c0f-eedab7b2a876",
+      "name": "Download MD (Success)",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        11440,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "let current = '';\ntry {\n  const buffer = await this.helpers.getBinaryDataBuffer(0, 'data');\n  current = buffer.toString('utf-8');\n} catch (e) {\n  current = '';\n}\nconst ctx = $('Folder Context').first().json;\nif (!current) {\n  current = '# ' + ctx.projectName + ' - Expense Processing Report\\n\\n## Invoice log\\n\\n';\n}\nconst d = $('Format Rows For Spreadsheet').first().json;\nconst rows = d.newRows || [];\nlet entry = '### ' + d.fileName + '\\n\\n';\nentry += '- **Status:** processed (' + d.confidence + '% confidence)\\n';\nentry += '- **Read as:** ' + d.sourceType + '\\n';\nfor (const r of rows) {\n  entry += '- **Row written:** ' + r['Seller / Service Provider'] + ' | ' + r['Description']\n        + ' | net ' + r['Net Cost'] + ' | VAT ' + r['VAT'] + ' | ' + r['Date'] + '\\n';\n}\nentry += '- **Notes:** ' + (d.notes || 'Processed correctly, no issues found.') + '\\n';\nentry += '- **Moved to:** ' + ctx.projectName + ' - PROCESSED / Processed Invoices\\n\\n';\n\nconst updated = current + entry;\nreturn [{\n  json: { mdLength: updated.length },\n  binary: { data: {\n    data: Buffer.from(updated, 'utf-8').toString('base64'),\n    mimeType: 'text/markdown',\n    fileName: ctx.projectName + '.md',\n    fileExtension: 'md'\n  } }\n}];"
+      },
+      "id": "aa9dece9-d744-432e-8760-6fcb4094c49a",
+      "name": "Append Success Entry To MD",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        11700,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "update",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Upload Initial MD File').first().json.id }}"
+        },
+        "changeFileContent": true,
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "id": "1c162b51-84de-4bdd-bf90-bb2aa3cb65d4",
+      "name": "Update MD File (Success)",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        11960,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "move",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Process Files One By One').first().json.id }}"
+        },
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive",
+          "cachedResultName": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Folder Context').first().json.processedInvoicesFolderId }}"
+        },
+        "destinationFolderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Folder Context').first().json.processedInvoicesFolderId }}"
+        },
+        "options": {}
+      },
+      "id": "3cf2a580-4ad7-4558-a5f3-184f6c1e0c38",
+      "name": "Move File To Processed Invoices",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        12220,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Upload Initial MD File').first().json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "d04b10bb-6583-42ce-872f-57408c463b4e",
+      "name": "Download MD (Failure)",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        8580,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "let current = '';\ntry {\n  const buffer = await this.helpers.getBinaryDataBuffer(0, 'data');\n  current = buffer.toString('utf-8');\n} catch (e) {\n  current = '';\n}\nconst ctx = $('Folder Context').first().json;\nif (!current) {\n  current = '# ' + ctx.projectName + ' - Expense Processing Report\\n\\n## Invoice log\\n\\n';\n}\nconst d = $('Merge Failure Paths').first().json;\nlet entry = '### ' + d.fileName + '  -  NEEDS MANUAL REVIEW\\n\\n';\nentry += '- **Status:** NOT processed\\n';\nentry += '- **Read as:** ' + (d.sourceType || 'unknown') + '\\n';\nentry += '- **Reason:** ' + (d.reason || 'Unknown problem.') + '\\n';\nif (d.bestGuess) {\n  entry += '- **Best guess (NOT written to the spreadsheet):** '\n        + (d.bestGuess.seller || '?') + ' | ' + (d.bestGuess.description || '?')\n        + ' | net ' + (d.bestGuess.net_cost !== undefined ? d.bestGuess.net_cost : '?')\n        + ' | VAT ' + (d.bestGuess.vat !== undefined ? d.bestGuess.vat : '?')\n        + ' | ' + (d.bestGuess.date || '?') + '\\n';\n}\nentry += '- **Moved to:** ' + ctx.projectName + ' - UNCOMPLETED\\n\\n';\n\nconst updated = current + entry;\nreturn [{\n  json: { mdLength: updated.length },\n  binary: { data: {\n    data: Buffer.from(updated, 'utf-8').toString('base64'),\n    mimeType: 'text/markdown',\n    fileName: ctx.projectName + '.md',\n    fileExtension: 'md'\n  } }\n}];"
+      },
+      "id": "1a65d7c5-5ca6-4789-ad9f-14b24afcf953",
+      "name": "Append Failure Entry To MD",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8840,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "update",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Upload Initial MD File').first().json.id }}"
+        },
+        "changeFileContent": true,
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "id": "bf6cd4be-ad9c-406d-8969-273d820646e4",
+      "name": "Update MD File (Failure)",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        9100,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "move",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Process Files One By One').first().json.id }}"
+        },
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive",
+          "cachedResultName": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Folder Context').first().json.uncompletedFolderId }}"
+        },
+        "destinationFolderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Folder Context').first().json.uncompletedFolderId }}"
+        },
+        "options": {}
+      },
+      "id": "7c2afd8a-2fe4-4212-af0f-e7ba3c49aa7c",
+      "name": "Move File To UNCOMPLETED",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        9360,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 2
+      },
+      "id": "7f66b06e-6c25-4621-9615-fdcec89d7118",
+      "name": "Merge Finalize Entry",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        3380,
+        1500
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "={{ \"'\" + $('Folder Context').first().json.processedFolderId + \"' in parents and name = '\" + $('Folder Context').first().json.projectName + \".xlsx' and trashed = false\" }}",
+        "returnAll": true,
+        "filter": {
+          "driveId": {
+            "__rl": true,
+            "mode": "list",
+            "value": "My Drive",
+            "cachedResultName": "My Drive"
+          }
+        },
+        "options": {}
+      },
+      "id": "1ec39ef8-ee97-45c6-8d4d-acc08d9318ec",
+      "name": "Search Final XLSX",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        3640,
+        1500
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "9965afb3-a86e-4835-ad20-b57dde1aa090",
+              "leftValue": "={{ !!$json.id }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7b8f69b3-b580-4bdc-b205-b79fadaf2967",
+      "name": "Final XLSX Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3900,
+        1500
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "21b07f2c-80a9-4268-82ce-22181c3c4903",
+      "name": "Download Final XLSX",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        4160,
+        1350
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "ebeef2c2-6f85-441a-8329-3404e39446f5",
+      "name": "Extract Final Rows",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        4420,
+        1350
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return [{ json: { __placeholder: true } }];"
+      },
+      "id": "3eb7aa20-d9e4-4fb5-9e5a-9876fbdc0a06",
+      "name": "No Final Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        1650
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 2
+      },
+      "id": "59588d9f-35ab-422d-b9dc-3e909f001336",
+      "name": "Merge Final Rows",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        4680,
+        1500
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function parseAmount(v) {\n  if (v === undefined || v === null) return 0;\n  return Number(String(v).replace(/\\./g, '').replace(',', '.')) || 0;\n}\nconst rows = $input.all().map(i => i.json).filter(r => r && !r.__placeholder && r['Seller / Service Provider'] !== undefined);\nconst netTotal = rows.reduce((s, r) => s + parseAmount(r['Net Cost']), 0);\nconst vatTotal = rows.reduce((s, r) => s + parseAmount(r['VAT']), 0);\nreturn [{ json: { rowCount: rows.length, netTotal, vatTotal, grossTotal: netTotal + vatTotal } }];"
+      },
+      "id": "59118cca-ed1d-4aa2-898d-b89db00822fe",
+      "name": "Collect Final Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4940,
+        1500
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "={{ \"'\" + $('Folder Context').first().json.uncompletedFolderId + \"' in parents and trashed = false\" }}",
+        "returnAll": true,
+        "filter": {
+          "driveId": {
+            "__rl": true,
+            "mode": "list",
+            "value": "My Drive",
+            "cachedResultName": "My Drive"
+          }
+        },
+        "options": {}
+      },
+      "id": "e4fe5f1c-0359-4146-b288-a3789ce43850",
+      "name": "List UNCOMPLETED Files",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        5200,
+        1500
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const files = $input.all().map(i => i.json).filter(f => f && f.id);\nreturn [{ json: { uncompletedCount: files.length, uncompletedNames: files.map(f => f.name) } }];"
+      },
+      "id": "ce67f9c8-d97d-4ded-a54c-7ab3a798fdee",
+      "name": "Collect Uncompleted Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5460,
+        1500
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Upload Initial MD File').first().json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "92190334-4ff8-4976-a8b4-a52f650fdeae",
+      "name": "Download MD (Final)",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        5720,
+        1500
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "let current = '';\ntry {\n  const buffer = await this.helpers.getBinaryDataBuffer(0, 'data');\n  current = buffer.toString('utf-8');\n} catch (e) {\n  current = '';\n}\nconst ctx = $('Folder Context').first().json;\nif (!current) {\n  current = '# ' + ctx.projectName + ' - Expense Processing Report\\n\\n## Invoice log\\n\\n';\n}\nfunction fmt(num) {\n  const parts = Math.abs(Number(num) || 0).toFixed(2).split('.');\n  return ((Number(num) || 0) < 0 ? '-' : '') + parts[0] + ',' + parts[1];\n}\nconst totals = $('Collect Final Rows').first().json;\nconst unc = $('Collect Uncompleted Files').first().json;\nconst stamp = new Date().toISOString().replace('T', ' ').substring(0, 19);\n\nlet entry = '\\n---\\n\\n## Summary\\n\\n';\nentry += 'Processing of **' + ctx.projectName + '** finished on ' + stamp + ' (UTC). ';\nentry += 'A total of **' + totals.rowCount + ' expense row(s)** were written to `' + ctx.projectName + '.xlsx`, ';\nentry += 'adding up to a net total of **' + fmt(totals.netTotal) + '**, VAT of **' + fmt(totals.vatTotal) + '**, ';\nentry += 'and a gross total of **' + fmt(totals.grossTotal) + '**. ';\nif (unc.uncompletedCount > 0) {\n  entry += '**' + unc.uncompletedCount + ' file(s) could not be processed with enough certainty** and were moved to the '\n        + ctx.projectName + ' - UNCOMPLETED folder: ' + unc.uncompletedNames.join(', ') + '. '\n        + 'Each of them is listed above with the reason it failed, so they can be entered by hand or re-run after a fix. ';\n} else {\n  entry += 'Every document found in the project folder was processed successfully, with no files left for manual review. ';\n}\nentry += 'All figures above come straight from the rows written to the spreadsheet, so the spreadsheet remains the single source of truth.\\n';\n\nconst updated = current + entry;\nreturn [{\n  json: { mdLength: updated.length },\n  binary: { data: {\n    data: Buffer.from(updated, 'utf-8').toString('base64'),\n    mimeType: 'text/markdown',\n    fileName: ctx.projectName + '.md',\n    fileExtension: 'md'\n  } }\n}];"
+      },
+      "id": "aae2eb95-80c9-43b3-8e10-c4b7be70254e",
+      "name": "Append Summary To MD",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5980,
+        1500
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "update",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Upload Initial MD File').first().json.id }}"
+        },
+        "changeFileContent": true,
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "id": "67f9b62b-4553-4559-8ca9-53ec20ee4910",
+      "name": "Update MD File (Final)",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        6240,
+        1500
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Folder Context').first().json.telegramChatId }}",
+        "text": "={{ 'Processing of the project ' + $('Folder Context').first().json.projectName + ' has finished.' }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "76b31a98-b19c-4862-b066-551654a0fbc2",
+      "name": "Send Telegram Completion",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        6500,
+        1500
+      ]
+    }
+  ],
+  "connections": {
+    "Trigger - New Project Folder Dropped": {
+      "main": [
+        [
+          {
+            "node": "Project Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Project Config": {
+      "main": [
+        [
+          {
+            "node": "Search Existing PROCESSED Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Existing PROCESSED Folder": {
+      "main": [
+        [
+          {
+            "node": "Already Initialized?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Initialized?": {
+      "main": [
+        [
+          {
+            "node": "Stop - Already Initialized",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create PROCESSED Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create PROCESSED Folder": {
+      "main": [
+        [
+          {
+            "node": "Create UNCOMPLETED Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create UNCOMPLETED Folder": {
+      "main": [
+        [
+          {
+            "node": "Create Processed Invoices Subfolder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Processed Invoices Subfolder": {
+      "main": [
+        [
+          {
+            "node": "Folder Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Folder Context": {
+      "main": [
+        [
+          {
+            "node": "Build Initial MD File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Initial MD File": {
+      "main": [
+        [
+          {
+            "node": "Upload Initial MD File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Initial MD File": {
+      "main": [
+        [
+          {
+            "node": "List Project Root Children",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Project Root Children": {
+      "main": [
+        [
+          {
+            "node": "Remove Tracking Folders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove Tracking Folders": {
+      "main": [
+        [
+          {
+            "node": "L0 Files Only",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "L0 Folders Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "L0 Folders Only": {
+      "main": [
+        [
+          {
+            "node": "List Level 1 Children",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Level 1 Children": {
+      "main": [
+        [
+          {
+            "node": "L1 Files Only",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "L1 Folders Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "L1 Folders Only": {
+      "main": [
+        [
+          {
+            "node": "List Level 2 Children",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Level 2 Children": {
+      "main": [
+        [
+          {
+            "node": "L2 Files Only",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "L2 Folders Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "L2 Folders Only": {
+      "main": [
+        [
+          {
+            "node": "List Level 3 Children",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Level 3 Children": {
+      "main": [
+        [
+          {
+            "node": "L3 Files Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "L0 Files Only": {
+      "main": [
+        [
+          {
+            "node": "Merge All Discovered Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "L1 Files Only": {
+      "main": [
+        [
+          {
+            "node": "Merge All Discovered Files",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "L2 Files Only": {
+      "main": [
+        [
+          {
+            "node": "Merge All Discovered Files",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "L3 Files Only": {
+      "main": [
+        [
+          {
+            "node": "Merge All Discovered Files",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Merge All Discovered Files": {
+      "main": [
+        [
+          {
+            "node": "Prepare File Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare File Queue": {
+      "main": [
+        [
+          {
+            "node": "Any Files Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Files Found?": {
+      "main": [
+        [
+          {
+            "node": "Process Files One By One",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Finalize Entry",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Process Files One By One": {
+      "main": [
+        [
+          {
+            "node": "Merge Finalize Entry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Route - Is PDF?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route - Is PDF?": {
+      "main": [
+        [
+          {
+            "node": "Download PDF File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Route - Is Image?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route - Is Image?": {
+      "main": [
+        [
+          {
+            "node": "Download Image File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Route - Is Spreadsheet?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route - Is Spreadsheet?": {
+      "main": [
+        [
+          {
+            "node": "Download Spreadsheet File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Route - Is Document?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download PDF File": {
+      "main": [
+        [
+          {
+            "node": "Extract PDF Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDF Text": {
+      "main": [
+        [
+          {
+            "node": "Check PDF Text Quality",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check PDF Text Quality": {
+      "main": [
+        [
+          {
+            "node": "PDF Text Usable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Spreadsheet File": {
+      "main": [
+        [
+          {
+            "node": "Extract Spreadsheet Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Spreadsheet Rows": {
+      "main": [
+        [
+          {
+            "node": "Stringify Spreadsheet Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route - Is Document?": {
+      "main": [
+        [
+          {
+            "node": "Download Document File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Unsupported File Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Document File": {
+      "main": [
+        [
+          {
+            "node": "Extract Document Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Document Text": {
+      "main": [
+        [
+          {
+            "node": "Check Document Text Quality",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF Text Usable?": {
+      "main": [
+        [
+          {
+            "node": "Merge Text Sources",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge PDF Fallback Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stringify Spreadsheet Rows": {
+      "main": [
+        [
+          {
+            "node": "Merge Text Sources",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Check Document Text Quality": {
+      "main": [
+        [
+          {
+            "node": "Merge Text Sources",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Mark Unsupported File Type": {
+      "main": [
+        [
+          {
+            "node": "Merge Text Sources",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Merge Text Sources": {
+      "main": [
+        [
+          {
+            "node": "Text Extracted OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text Extracted OK?": {
+      "main": [
+        [
+          {
+            "node": "LLM - Extract From Text (Pass 1)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure - Could Not Read File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM - Extract From Text (Pass 1)": {
+      "main": [
+        [
+          {
+            "node": "Parse LLM Response (Text Pass 1)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse LLM Response (Text Pass 1)": {
+      "main": [
+        [
+          {
+            "node": "Text Pass 1 Confident?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text Pass 1 Confident?": {
+      "main": [
+        [
+          {
+            "node": "Build Success Entries (Text Pass 1)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Low Confidence - Is It A PDF?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Low Confidence - Is It A PDF?": {
+      "main": [
+        [
+          {
+            "node": "Merge PDF Fallback Entry",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        [
+          {
+            "node": "LLM - Extract From Text (Pass 2 Strict)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM - Extract From Text (Pass 2 Strict)": {
+      "main": [
+        [
+          {
+            "node": "Parse LLM Response (Text Pass 2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse LLM Response (Text Pass 2)": {
+      "main": [
+        [
+          {
+            "node": "Pick Best Text Extraction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Best Text Extraction": {
+      "main": [
+        [
+          {
+            "node": "Text Final Confident?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text Final Confident?": {
+      "main": [
+        [
+          {
+            "node": "Build Success Entries (Text Final)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure - Low Confidence (Text)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge PDF Fallback Entry": {
+      "main": [
+        [
+          {
+            "node": "Download PDF For Rendering",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download PDF For Rendering": {
+      "main": [
+        [
+          {
+            "node": "PDF Binary To Base64",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF Binary To Base64": {
+      "main": [
+        [
+          {
+            "node": "Render PDF Pages To Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render PDF Pages To Images": {
+      "main": [
+        [
+          {
+            "node": "Build Image Payload From Rendered PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Image File": {
+      "main": [
+        [
+          {
+            "node": "Build Image Payload From File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Image Payload From Rendered PDF": {
+      "main": [
+        [
+          {
+            "node": "Merge Image Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Image Payload From File": {
+      "main": [
+        [
+          {
+            "node": "Merge Image Sources",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Image Sources": {
+      "main": [
+        [
+          {
+            "node": "Image Payload OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image Payload OK?": {
+      "main": [
+        [
+          {
+            "node": "LLM - Extract From Image (Pass 1)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure - No Usable Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM - Extract From Image (Pass 1)": {
+      "main": [
+        [
+          {
+            "node": "Parse LLM Response (Image Pass 1)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse LLM Response (Image Pass 1)": {
+      "main": [
+        [
+          {
+            "node": "Image Pass 1 Confident?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image Pass 1 Confident?": {
+      "main": [
+        [
+          {
+            "node": "Build Success Entries (Image Pass 1)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LLM - Extract From Image (Pass 2 Strict)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM - Extract From Image (Pass 2 Strict)": {
+      "main": [
+        [
+          {
+            "node": "Parse LLM Response (Image Pass 2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse LLM Response (Image Pass 2)": {
+      "main": [
+        [
+          {
+            "node": "Pick Best Image Extraction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Best Image Extraction": {
+      "main": [
+        [
+          {
+            "node": "Image Final Confident?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image Final Confident?": {
+      "main": [
+        [
+          {
+            "node": "Build Success Entries (Image Final)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failure - Low Confidence (Image)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Failure - Could Not Read File": {
+      "main": [
+        [
+          {
+            "node": "Merge Failure Paths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Failure - Low Confidence (Text)": {
+      "main": [
+        [
+          {
+            "node": "Merge Failure Paths",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Failure - No Usable Images": {
+      "main": [
+        [
+          {
+            "node": "Merge Failure Paths",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Failure - Low Confidence (Image)": {
+      "main": [
+        [
+          {
+            "node": "Merge Failure Paths",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Build Success Entries (Text Pass 1)": {
+      "main": [
+        [
+          {
+            "node": "Merge Success Paths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Success Entries (Text Final)": {
+      "main": [
+        [
+          {
+            "node": "Merge Success Paths",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Build Success Entries (Image Pass 1)": {
+      "main": [
+        [
+          {
+            "node": "Merge Success Paths",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Build Success Entries (Image Final)": {
+      "main": [
+        [
+          {
+            "node": "Merge Success Paths",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Merge Success Paths": {
+      "main": [
+        [
+          {
+            "node": "Format Rows For Spreadsheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Rows For Spreadsheet": {
+      "main": [
+        [
+          {
+            "node": "Search Project XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Project XLSX": {
+      "main": [
+        [
+          {
+            "node": "XLSX Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "XLSX Exists?": {
+      "main": [
+        [
+          {
+            "node": "Download Existing XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Existing Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Existing XLSX": {
+      "main": [
+        [
+          {
+            "node": "Extract Existing XLSX Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Existing XLSX Rows": {
+      "main": [
+        [
+          {
+            "node": "Merge Existing Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Existing Rows": {
+      "main": [
+        [
+          {
+            "node": "Merge Existing Rows",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Existing Rows": {
+      "main": [
+        [
+          {
+            "node": "Combine Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Rows": {
+      "main": [
+        [
+          {
+            "node": "Convert Rows To XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert Rows To XLSX": {
+      "main": [
+        [
+          {
+            "node": "XLSX Existed Before?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "XLSX Existed Before?": {
+      "main": [
+        [
+          {
+            "node": "Update Project XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Project XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Project XLSX": {
+      "main": [
+        [
+          {
+            "node": "Merge After XLSX Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Project XLSX": {
+      "main": [
+        [
+          {
+            "node": "Merge After XLSX Write",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge After XLSX Write": {
+      "main": [
+        [
+          {
+            "node": "Download MD (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download MD (Success)": {
+      "main": [
+        [
+          {
+            "node": "Append Success Entry To MD",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Success Entry To MD": {
+      "main": [
+        [
+          {
+            "node": "Update MD File (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update MD File (Success)": {
+      "main": [
+        [
+          {
+            "node": "Move File To Processed Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move File To Processed Invoices": {
+      "main": [
+        [
+          {
+            "node": "Process Files One By One",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Failure Paths": {
+      "main": [
+        [
+          {
+            "node": "Download MD (Failure)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download MD (Failure)": {
+      "main": [
+        [
+          {
+            "node": "Append Failure Entry To MD",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Failure Entry To MD": {
+      "main": [
+        [
+          {
+            "node": "Update MD File (Failure)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update MD File (Failure)": {
+      "main": [
+        [
+          {
+            "node": "Move File To UNCOMPLETED",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move File To UNCOMPLETED": {
+      "main": [
+        [
+          {
+            "node": "Process Files One By One",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Finalize Entry": {
+      "main": [
+        [
+          {
+            "node": "Search Final XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Final XLSX": {
+      "main": [
+        [
+          {
+            "node": "Final XLSX Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Final XLSX Exists?": {
+      "main": [
+        [
+          {
+            "node": "Download Final XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Final Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Final XLSX": {
+      "main": [
+        [
+          {
+            "node": "Extract Final Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Final Rows": {
+      "main": [
+        [
+          {
+            "node": "Merge Final Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Final Rows": {
+      "main": [
+        [
+          {
+            "node": "Merge Final Rows",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Final Rows": {
+      "main": [
+        [
+          {
+            "node": "Collect Final Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Final Rows": {
+      "main": [
+        [
+          {
+            "node": "List UNCOMPLETED Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List UNCOMPLETED Files": {
+      "main": [
+        [
+          {
+            "node": "Collect Uncompleted Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Uncompleted Files": {
+      "main": [
+        [
+          {
+            "node": "Download MD (Final)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download MD (Final)": {
+      "main": [
+        [
+          {
+            "node": "Append Summary To MD",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Summary To MD": {
+      "main": [
+        [
+          {
+            "node": "Update MD File (Final)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update MD File (Final)": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "40e7e781-3d86-4b2c-b344-8bf164753012",
+  "meta": {
+    "instanceId": "quadrum-expense-workflow"
+  },
+  "tags": []
+}

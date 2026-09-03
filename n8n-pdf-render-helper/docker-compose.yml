@@ -1,0 +1,7 @@
+services:
+  n8n-pdf-render-helper:
+    build: .
+    container_name: n8n-pdf-render-helper
+    restart: unless-stopped
+    ports:
+      - "18880:18880"
