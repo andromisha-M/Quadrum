@@ -1,33 +1,46 @@
-"""PDF render helper for the Quadrum n8n expense workflow.
+"""Document render helper for the Quadrum n8n expense workflow.
 
-Converts PDF pages to PNG images so a vision LLM can read invoices whose
-text layer is missing or unreliable (scans, photos exported to PDF).
+Turns documents into page images so a vision LLM can read invoices that
+cannot be read as text: scans, photos exported to PDF, and Office files
+(.doc, .docx, .xls, .xlsx, .odt, .rtf) that no text extractor handles well.
 
-Uses PyMuPDF, which ships prebuilt wheels - no poppler or other system
-packages required, so it runs on a plain python:3.11-slim container.
+PDF rasterising uses PyMuPDF (prebuilt wheels, no system deps). Office
+conversion shells out to LibreOffice headless, which the image installs.
 
 Endpoints:
-  GET  /health          -> {"status": "ok"}
-  POST /pdf-to-images   -> multipart upload, field name "file"
-  POST /pdf-to-images-base64 -> JSON {"base64": "...", "dpi": 200, "max_pages": 5}
+  GET  /health                  -> {"status": "ok", ...}
+  POST /pdf-to-images           -> multipart upload, field name "file"
+  POST /pdf-to-images-base64    -> JSON {"base64", "dpi", "max_pages"}
+  POST /office-to-images-base64 -> JSON {"base64", "filename", "dpi", "max_pages"}
 
-Both conversion endpoints return:
+Every conversion endpoint returns:
   {"pageCount": 3, "returnedPages": 3,
    "images": [{"page": 1, "mimeType": "image/png", "base64": "..."}]}
 """
 
 import base64
+import os
+import pathlib
+import shutil
+import subprocess
+import tempfile
 
 import fitz
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-app = FastAPI(title="n8n PDF Render Helper", version="1.0.0")
+app = FastAPI(title="n8n Document Render Helper", version="1.1.0")
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 DEFAULT_DPI = 200
 MAX_DPI = 400
 DEFAULT_MAX_PAGES = 5
+SOFFICE_TIMEOUT = 180
+OFFICE_SUFFIXES = {
+    ".doc", ".docx", ".docm", ".dot", ".dotx", ".odt", ".rtf", ".txt",
+    ".xls", ".xlsx", ".xlsm", ".xlt", ".xltx", ".ods", ".csv",
+    ".ppt", ".pptx", ".odp",
+}
 HARD_PAGE_CAP = 20
 
 
@@ -62,15 +75,72 @@ def render(pdf_bytes: bytes, dpi: int, max_pages: int) -> dict:
     return {"pageCount": total_pages, "returnedPages": len(images), "images": images}
 
 
+def office_to_pdf(data: bytes, filename: str) -> bytes:
+    """Convert an Office/text document to PDF with LibreOffice headless."""
+    if not shutil.which("soffice"):
+        raise HTTPException(
+            status_code=501,
+            detail="LibreOffice is not installed in this container - rebuild the image "
+                   "(docker compose up -d --build) to enable Office conversion.",
+        )
+
+    suffix = pathlib.Path(filename or "").suffix.lower()
+    if suffix not in OFFICE_SUFFIXES:
+        # Unknown extension: let LibreOffice sniff it, but give it something to work with.
+        suffix = suffix or ".doc"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        source = os.path.join(tmp, "input" + suffix)
+        with open(source, "wb") as handle:
+            handle.write(data)
+
+        # LibreOffice needs a writable HOME of its own, or it silently does nothing.
+        env = dict(os.environ, HOME=tmp)
+        try:
+            proc = subprocess.run(
+                ["soffice", "--headless", "--norestore", "--nolockcheck",
+                 "--convert-to", "pdf", "--outdir", tmp, source],
+                capture_output=True, timeout=SOFFICE_TIMEOUT, env=env,
+            )
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=504, detail="LibreOffice timed out converting this file")
+
+        produced = os.path.join(tmp, "input.pdf")
+        if not os.path.exists(produced):
+            detail = (proc.stderr or proc.stdout or b"").decode("utf-8", "replace")[:400]
+            raise HTTPException(
+                status_code=422,
+                detail=f"LibreOffice could not convert this file ({suffix or 'no extension'}): {detail}",
+            )
+        with open(produced, "rb") as handle:
+            return handle.read()
+
+
 class Base64Request(BaseModel):
     base64: str
     dpi: int = DEFAULT_DPI
     max_pages: int = DEFAULT_MAX_PAGES
 
 
+class OfficeRequest(Base64Request):
+    filename: str = ""
+
+
+def decode_payload(value: str) -> bytes:
+    raw = value.split(",", 1)[-1] if value.startswith("data:") else value
+    try:
+        return base64.b64decode(raw, validate=False)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64: {exc}")
+
+
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "pymupdf": fitz.__doc__.strip() if fitz.__doc__ else "loaded"}
+    return {
+        "status": "ok",
+        "pymupdf": fitz.__doc__.strip() if fitz.__doc__ else "loaded",
+        "libreoffice": bool(shutil.which("soffice")),
+    }
 
 
 @app.post("/pdf-to-images")
@@ -84,9 +154,17 @@ async def pdf_to_images(
 
 @app.post("/pdf-to-images-base64")
 def pdf_to_images_base64(payload: Base64Request) -> dict:
-    raw = payload.base64.split(",", 1)[-1] if payload.base64.startswith("data:") else payload.base64
-    try:
-        pdf_bytes = base64.b64decode(raw, validate=False)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid base64: {exc}")
-    return render(pdf_bytes, payload.dpi, payload.max_pages)
+    return render(decode_payload(payload.base64), payload.dpi, payload.max_pages)
+
+
+@app.post("/office-to-images-base64")
+def office_to_images_base64(payload: OfficeRequest) -> dict:
+    """Word/Excel/etc -> PDF -> page images, so the vision model can read it."""
+    data = decode_payload(payload.base64)
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty document payload")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Document larger than 50 MB")
+    result = render(office_to_pdf(data, payload.filename), payload.dpi, payload.max_pages)
+    result["convertedFrom"] = payload.filename or "(unnamed)"
+    return result

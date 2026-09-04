@@ -1,0 +1,121 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Process Files One By One').first().json.id }}"
+        },
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "07dbfdec-bac1-4d2f-a792-8f4dd33c5afb",
+      "name": "Download Office File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        5200,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const f = $('Process Files One By One').first().json;\nlet base64 = '';\ntry {\n  const buffer = await this.helpers.getBinaryDataBuffer(0, 'data');\n  base64 = buffer.toString('base64');\n} catch (e) {\n  base64 = '';\n}\nreturn [{ json: { officeBase64: base64, officeBytes: base64.length, fileName: f.name } }];\n"
+      },
+      "id": "7abcb8f8-2714-4a03-8ad8-8f052046d8c7",
+      "name": "Office Binary To Base64",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5460,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Folder Context').first().json.pdfRenderHelperUrl.replace('/pdf-to-images-base64', '/office-to-images-base64') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ base64: $json.officeBase64, filename: $json.fileName, dpi: 200, max_pages: 3 }) }}",
+        "options": {
+          "timeout": 240000
+        }
+      },
+      "id": "6984cbd1-982d-4ee0-9dad-c5ed01d282f0",
+      "name": "Convert Office File To Images",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5720,
+        800
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const f = $('Process Files One By One').first().json;\nconst resp = $input.first().json || {};\nconst images = Array.isArray(resp.images) ? resp.images : [];\nconst urls = images.map(img => 'data:' + (img.mimeType || 'image/png') + ';base64,' + img.base64);\n\nlet why = '';\nif (urls.length === 0) {\n  const sent = $('Office Binary To Base64').first().json || {};\n  if (!sent.officeBytes) {\n    why = 'the file could not be downloaded from Google Drive';\n  } else if (resp.error) {\n    why = 'the conversion request failed: '\n        + (typeof resp.error === 'string' ? resp.error : JSON.stringify(resp.error)).substring(0, 400);\n  } else if (resp.detail) {\n    why = 'LibreOffice could not convert it: ' + JSON.stringify(resp.detail).substring(0, 400);\n  } else {\n    why = 'the converter gave no usable answer: ' + JSON.stringify(resp).substring(0, 400);\n  }\n}\n\nreturn [{ json: {\n  fileId: f.id, fileName: f.name, mimeType: f.mimeType, sourceType: 'office-converted',\n  imageDataUrls: urls,\n  imageOk: urls.length > 0,\n  imageNote: urls.length > 0\n    ? ('Could not be read as text, so it was converted to ' + urls.length + ' page image(s) and read by the vision model.')\n    : ('Could not be read as text and conversion to images failed: ' + why + '.')\n} }];\n"
+      },
+      "id": "aaad273d-e25a-494e-9bab-5d81253d1297",
+      "name": "Build Image Payload From Office",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5980,
+        800
+      ]
+    }
+  ],
+  "connections": {
+    "Download Office File": {
+      "main": [
+        [
+          {
+            "node": "Office Binary To Base64",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Office Binary To Base64": {
+      "main": [
+        [
+          {
+            "node": "Convert Office File To Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert Office File To Images": {
+      "main": [
+        [
+          {
+            "node": "Build Image Payload From Office",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
