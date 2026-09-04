@@ -1,0 +1,152 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "=mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+        "returnAll": true,
+        "filter": {
+          "driveId": {
+            "__rl": true,
+            "mode": "list",
+            "value": "My Drive",
+            "cachedResultName": "My Drive"
+          }
+        },
+        "options": {
+          "fields": [
+            "id",
+            "name",
+            "mimeType",
+            "parents"
+          ]
+        }
+      },
+      "id": "a539656e-4cb1-4a3f-99dc-5ac13f63ded1",
+      "name": "List All Folders In Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        0,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const ctx = $('Folder Context').first().json;\nconst skip = new Set([ctx.processedFolderId, ctx.uncompletedFolderId, ctx.processedInvoicesFolderId]);\nconst all = $input.all().map(i => i.json).filter(f => f && f.id);\n\n// Fail loudly rather than silently missing invoices.\nif (!all.some(f => Array.isArray(f.parents) && f.parents.length)) {\n  throw new Error('Drive did not return \"parents\". Open \"List All Folders In Drive\" -> Options -> Fields and make sure \"parents\" is included.');\n}\n\n// parent id -> child folders\nconst childrenOf = new Map();\nfor (const f of all) {\n  for (const p of (f.parents || [])) {\n    if (!childrenOf.has(p)) childrenOf.set(p, []);\n    childrenOf.get(p).push(f);\n  }\n}\n\n// Breadth-first walk from the project folder - no depth limit.\nconst out = [{ json: { id: ctx.projectFolderId, name: ctx.projectName, depth: 0 } }];\nconst queue = [{ id: ctx.projectFolderId, depth: 0 }];\nconst seen = new Set([ctx.projectFolderId]);\nwhile (queue.length) {\n  const cur = queue.shift();\n  for (const child of (childrenOf.get(cur.id) || [])) {\n    if (seen.has(child.id) || skip.has(child.id)) continue;\n    seen.add(child.id);\n    out.push({ json: { id: child.id, name: child.name, depth: cur.depth + 1 } });\n    queue.push({ id: child.id, depth: cur.depth + 1 });\n  }\n}\nreturn out;"
+      },
+      "id": "84405211-7526-44bf-9450-714d86eaf22e",
+      "name": "Find All Subfolders (Any Depth)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "operation": "search",
+        "searchMethod": "query",
+        "queryString": "={{ \"'\" + $json.id + \"' in parents and trashed = false\" }}",
+        "returnAll": true,
+        "filter": {
+          "driveId": {
+            "__rl": true,
+            "mode": "list",
+            "value": "My Drive",
+            "cachedResultName": "My Drive"
+          }
+        },
+        "options": {
+          "fields": [
+            "id",
+            "name",
+            "mimeType",
+            "parents"
+          ]
+        }
+      },
+      "id": "163e4ca5-f836-4183-9803-43491c5451a1",
+      "name": "List Files In Each Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        520,
+        -950
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "a229a8f4-c9a5-4192-ac1d-d3d4f31bed54",
+              "leftValue": "={{ $json.mimeType }}",
+              "rightValue": "application/vnd.google-apps.folder",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5faefd54-13a4-42d9-bd2d-2a6f247d9938",
+      "name": "Files Only (All Levels)",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        780,
+        -950
+      ]
+    }
+  ],
+  "connections": {
+    "List All Folders In Drive": {
+      "main": [
+        [
+          {
+            "node": "Find All Subfolders (Any Depth)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find All Subfolders (Any Depth)": {
+      "main": [
+        [
+          {
+            "node": "List Files In Each Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Files In Each Folder": {
+      "main": [
+        [
+          {
+            "node": "Files Only (All Levels)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
