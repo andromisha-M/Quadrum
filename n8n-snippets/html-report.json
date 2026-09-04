@@ -1,0 +1,60 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const ctx = $('Folder Context').first().json;\nconst totals = $('Collect Final Rows').first().json;\nconst md = String(($('Append Summary To MD').first().json || {}).mdText || '');\n\n// Pull the machine-readable records the per-file steps left in the .md\nconst entries = [];\nconst re = /<!--DATA ([\\s\\S]*?)-->/g;\nlet m;\nwhile ((m = re.exec(md)) !== null) {\n  try { entries.push(JSON.parse(m[1])); } catch (e) { /* ignore malformed */ }\n}\n\nconst failed = entries.filter(e => e.status !== 'processed');\nconst done = entries.filter(e => e.status === 'processed');\nconst shaky = done.filter(e => Number(e.confidence) < 95);\n\nfunction esc(s) {\n  return String(s === undefined || s === null ? '' : s)\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');\n}\nfunction money(n) {\n  return (Number(n) || 0).toFixed(2);\n}\nfunction fileCell(e) {\n  const name = esc(e.file);\n  const link = e.link ? '<a href=\"' + esc(e.link) + '\" target=\"_blank\">' + name + '</a>' : name;\n  return link + '<div class=\"loc\">' + esc(e.folder || '(folder unknown)') + '</div>';\n}\n\nconst stamp = new Date().toISOString().replace('T', ' ').substring(0, 19);\n\nlet rowsHtml = '';\nfor (const e of failed) {\n  rowsHtml += '<tr class=\"bad\"><td>' + fileCell(e) + '</td><td>' + esc(e.sourceType || '')\n    + '</td><td class=\"reason\">' + esc(e.reason || '') + '</td></tr>';\n}\n\nlet okHtml = '';\nfor (const e of done) {\n  const cls = Number(e.confidence) < 95 ? 'warn' : '';\n  const rows = Array.isArray(e.rows) ? e.rows : [];\n  const detail = rows.map(r =>\n    esc(r['Seller / Service Provider']) + ' &middot; ' + esc(r['Description'])\n    + ' &middot; net ' + money(r['Net Cost']) + ' &middot; VAT ' + money(r['VAT'])\n    + ' &middot; ' + esc(r['Date'])).join('<br>');\n  okHtml += '<tr class=\"' + cls + '\"><td>' + fileCell(e) + '</td>'\n    + '<td class=\"conf\">' + esc(e.confidence) + '%</td>'\n    + '<td>' + detail + '</td>'\n    + '<td class=\"note\">' + esc(e.notes || '') + '</td></tr>';\n}\n\nconst html = '<!doctype html><html><head><meta charset=\"utf-8\">'\n+ '<title>' + esc(ctx.projectName) + ' - Expense Report</title><style>'\n+ 'body{font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:32px;color:#1a1a1a;background:#fff}'\n+ 'h1{font-size:24px;margin:0 0 4px}h2{font-size:17px;margin:32px 0 10px}'\n+ '.sub{color:#666;margin-bottom:24px}'\n+ '.cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px}'\n+ '.card{border:1px solid #e0e0e0;border-radius:8px;padding:12px 16px;min-width:130px}'\n+ '.card .n{font-size:22px;font-weight:600}.card .l{color:#666;font-size:12px}'\n+ '.card.red{border-color:#e5484d;background:#fff5f5}.card.red .n{color:#c62a2f}'\n+ 'table{border-collapse:collapse;width:100%;margin-top:6px}'\n+ 'th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #ececec;vertical-align:top}'\n+ 'th{background:#fafafa;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#555}'\n+ 'tr.bad td{background:#fff5f5;color:#c62a2f}tr.bad .reason{font-weight:500}'\n+ 'tr.warn td{background:#fffaf0}tr.warn .conf{color:#b45309;font-weight:600}'\n+ '.loc{color:#777;font-size:12px;margin-top:2px}'\n+ '.note{color:#555;font-size:13px}.conf{white-space:nowrap}'\n+ 'a{color:#0b62d0}.empty{color:#666;font-style:italic;padding:10px 0}'\n+ '@media print{body{padding:0}a{color:#000;text-decoration:none}}'\n+ '</style></head><body>'\n+ '<h1>' + esc(ctx.projectName) + '</h1>'\n+ '<div class=\"sub\">Expense processing report &middot; generated ' + stamp + ' UTC</div>'\n+ '<div class=\"cards\">'\n+ '<div class=\"card\"><div class=\"n\">' + totals.rowCount + '</div><div class=\"l\">rows in spreadsheet</div></div>'\n+ '<div class=\"card\"><div class=\"n\">' + money(totals.netTotal) + '</div><div class=\"l\">net total</div></div>'\n+ '<div class=\"card\"><div class=\"n\">' + money(totals.vatTotal) + '</div><div class=\"l\">VAT total</div></div>'\n+ '<div class=\"card\"><div class=\"n\">' + money(totals.grossTotal) + '</div><div class=\"l\">gross total</div></div>'\n+ '<div class=\"card' + (failed.length ? ' red' : '') + '\"><div class=\"n\">' + failed.length + '</div><div class=\"l\">need manual review</div></div>'\n+ '</div>'\n+ '<h2>Needs manual review</h2>'\n+ (failed.length\n    ? '<table><tr><th>File and location</th><th>Read as</th><th>Why it failed</th></tr>' + rowsHtml + '</table>'\n    : '<div class=\"empty\">Nothing - every document was processed.</div>')\n+ '<h2>Processed' + (shaky.length ? ' <span style=\"color:#b45309;font-weight:400;font-size:13px\">(' + shaky.length + ' below 95% - shaded)</span>' : '') + '</h2>'\n+ (done.length\n    ? '<table><tr><th>File and location</th><th>Conf.</th><th>Written to spreadsheet</th><th>Notes</th></tr>' + okHtml + '</table>'\n    : '<div class=\"empty\">No documents were processed.</div>')\n+ '</body></html>';\n\nreturn [{\n  json: { reportBytes: html.length, failedCount: failed.length, processedCount: done.length },\n  binary: { data: {\n    data: Buffer.from(html, 'utf-8').toString('base64'),\n    mimeType: 'text/html',\n    fileName: ctx.projectName + ' - report.html',\n    fileExtension: 'html'\n  } }\n}];\n"
+      },
+      "id": "5be549f0-9c6a-4819-98ac-67675f6043d4",
+      "name": "Build HTML Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6500,
+        1500
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "name": "={{ $('Folder Context').first().json.projectName + ' - report.html' }}",
+        "inputDataFieldName": "data",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive",
+          "cachedResultName": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Folder Context').first().json.processedFolderId }}"
+        },
+        "options": {}
+      },
+      "id": "a19d8eed-61f5-4774-a20b-4f13aa4ba4ed",
+      "name": "Upload HTML Report",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        6760,
+        1500
+      ]
+    }
+  ],
+  "connections": {
+    "Build HTML Report": {
+      "main": [
+        [
+          {
+            "node": "Upload HTML Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
