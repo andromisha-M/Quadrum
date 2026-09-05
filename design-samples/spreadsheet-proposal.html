@@ -1,0 +1,144 @@
+<title>Spreadsheet Design Proposal</title>
+<style>
+:root{--ink:#16181d;--muted:#6b7280;--line:#dfe3e8;--accent:#1a3d6d;--soft:#f7f8fa}
+*{box-sizing:border-box}
+body{margin:0;padding:40px 44px 64px;background:#fff;color:var(--ink);
+font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto}
+header{border-bottom:3px solid var(--accent);padding-bottom:18px;margin-bottom:14px}
+h1{margin:0;font-size:28px;letter-spacing:-.02em;font-weight:650}
+.eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);
+margin:0 0 6px;font-weight:600}
+.lede{color:var(--muted);max-width:70ch;margin:14px 0 30px}
+h2{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+margin:36px 0 12px;font-weight:700}
+.sheet{border:1px solid var(--line);border-radius:10px;overflow:auto;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+table{border-collapse:collapse;width:100%;font-size:13px;min-width:940px}
+.colhead td{background:#f1f3f5;color:#9aa2ad;font-size:11px;text-align:center;font-weight:600;
+padding:4px;border:1px solid #e3e7ec;font-family:ui-monospace,monospace}
+thead th{background:var(--accent);color:#fff;text-align:left;padding:11px 12px;font-size:11px;
+letter-spacing:.08em;text-transform:uppercase;font-weight:700;border-right:1px solid #2d5384;
+position:sticky;top:0;white-space:nowrap}
+thead th.num{text-align:right}
+tbody td{padding:9px 12px;border-bottom:1px solid var(--line);border-right:1px solid #eef1f4;
+vertical-align:top}
+tbody tr:nth-child(even) td{background:var(--soft)}
+.rownum{background:#f1f3f5!important;color:#9aa2ad;font-size:11px;text-align:center;width:34px;
+font-family:ui-monospace,monospace}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.seller{font-weight:560}
+.desc{color:#3d434d;max-width:280px}
+.proj{color:var(--accent);font-weight:560}
+.date{white-space:nowrap;font-variant-numeric:tabular-nums}
+.blank{background:#fcfcfd!important}
+.total{background:#eef3fa!important;font-weight:700;font-variant-numeric:tabular-nums;
+text-align:right;border-left:2px solid var(--accent)!important;white-space:nowrap}
+.totlabel{background:#eef3fa!important;font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+color:var(--accent);font-weight:700;text-align:right}
+.notes{margin-top:14px;font-size:13px;color:var(--muted)}
+.notes li{margin-bottom:7px}
+.warn{border-left:3px solid #d18616;background:#fffaf0;padding:14px 16px;border-radius:8px;
+font-size:14px;margin-top:14px}
+code{background:#f1f3f5;padding:1px 5px;border-radius:4px;font-size:12.5px}
+</style>
+
+<div class="wrap">
+<header>
+  <p class="eyebrow">Design proposal</p>
+  <h1>Ericsson.xlsx</h1>
+</header>
+
+<p class="lede">How the spreadsheet would look with formatting applied — frozen dark header row,
+banded rows, right-aligned amounts on tabular figures, the project name at F, and the running
+total anchored at K1/K2 away from the data.</p>
+
+<h2>Proposed layout</h2>
+<div class="sheet">
+<table>
+  <tr class="colhead">
+    <td></td><td>A</td><td>B</td><td>C</td><td>D</td><td>E</td><td>F</td>
+    <td>G</td><td>H</td><td>I</td><td>J</td><td>K</td>
+  </tr>
+  <thead>
+    <tr>
+      <th class="rownum" style="background:#f1f3f5"></th>
+      <th>Seller / Service Provider</th>
+      <th>Description</th>
+      <th class="num">Net Cost</th>
+      <th class="num">VAT</th>
+      <th>Date</th>
+      <th>Project</th>
+      <th></th><th></th><th></th><th></th>
+      <th class="num">Total Net</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="rownum">2</td>
+      <td class="seller">UDRUŽENJE FRIZERA „Academy &amp; Club CRNO BELI SVET“</td>
+      <td class="desc">Usluge frizera za projekat</td>
+      <td class="num">30,524.00</td>
+      <td class="num">0.00</td>
+      <td class="date">24.06.2026</td>
+      <td class="proj">LIDL JPK TVC</td>
+      <td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td>
+      <td class="total">1,336,184.00</td>
+    </tr>
+    <tr>
+      <td class="rownum">3</td>
+      <td class="seller">Pickle Camera</td>
+      <td class="desc">Usluge Ronin technician</td>
+      <td class="num">52,830.00</td>
+      <td class="num">0.00</td>
+      <td class="date">19.06.2026</td>
+      <td class="proj">TVC Lidl JPK</td>
+      <td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td>
+      <td class="blank"></td>
+    </tr>
+    <tr>
+      <td class="rownum">4</td>
+      <td class="seller">BAD RABBIT FILMS DOO</td>
+      <td class="desc">Usluge u sektoru režije</td>
+      <td class="num">1,200,000.00</td>
+      <td class="num">240,000.00</td>
+      <td class="date">18.06.2026</td>
+      <td class="proj">TVC Lidl korpa</td>
+      <td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td>
+      <td class="blank"></td>
+    </tr>
+    <tr>
+      <td class="rownum">5</td>
+      <td class="seller">DAN MOVIE PROIZVODNJA KINEMATOGRAFSKIH DELA</td>
+      <td class="desc">Tehnicke usluge prvog asistenta kamere</td>
+      <td class="num">52,830.00</td>
+      <td class="num">0.00</td>
+      <td class="date">19.06.2026</td>
+      <td class="proj">Lidl Jpk Tvc</td>
+      <td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td>
+      <td class="blank"></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<ul class="notes">
+  <li><strong>Row 1 frozen</strong> — headers stay visible however far down you scroll.</li>
+  <li><strong>C and D formatted as numbers</strong> with two decimals and thousands grouping, so
+      they display as <code>1,200,000.00</code> while staying summable.</li>
+  <li><strong>K1 label, K2 value</strong> — the total sits clear of the data so adding rows never
+      disturbs it. Row 1 is the header row, so the number itself lands in K2.</li>
+  <li><strong>Banded rows</strong> and generous column widths for long Serbian company names.</li>
+  <li><strong>F carries the project name</strong> read off the invoice, so one sheet can hold
+      several campaigns and still be filtered per project.</li>
+</ul>
+
+<div class="warn">
+<strong>The catch:</strong> none of this styling survives today's setup. n8n's
+<code>Convert to File</code> writes bare values, and the whole file is rewritten after every
+invoice — so bold headers, widths, colours and number formats are wiped each run. Formatting only
+sticks if we append rows to a <strong>Google Sheet</strong> you've styled once, instead of
+regenerating an .xlsx. That swap is about six nodes.
+</div>
+
+</div>
