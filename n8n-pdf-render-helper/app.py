@@ -19,14 +19,19 @@ Every conversion endpoint returns:
 """
 
 import base64
+import io
 import os
 import pathlib
 import shutil
 import subprocess
 import tempfile
+from typing import Any, Dict, List
 
 import fitz
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from pydantic import BaseModel
 
 app = FastAPI(title="n8n Document Render Helper", version="1.1.0")
@@ -155,6 +160,96 @@ async def pdf_to_images(
 @app.post("/pdf-to-images-base64")
 def pdf_to_images_base64(payload: Base64Request) -> dict:
     return render(decode_payload(payload.base64), payload.dpi, payload.max_pages)
+
+
+SHEET_COLUMNS = [
+    ("Seller / Service Provider", 42, "text"),
+    ("Description", 40, "text"),
+    ("Net Cost", 16, "money"),
+    ("VAT", 14, "money"),
+    ("Date", 14, "text"),
+    ("Project", 22, "text"),
+    ("", 3, "spacer"),
+    (" ", 3, "spacer"),
+    ("  ", 3, "spacer"),
+    ("   ", 3, "spacer"),
+    ("TOTAL NET", 18, "money"),
+]
+ACCENT = "1A3D6D"
+BAND = "F7F8FA"
+TOTAL_BG = "EEF3FA"
+MONEY_FORMAT = "#,##0.00"
+
+
+class RowsRequest(BaseModel):
+    rows: List[Dict[str, Any]] = []
+    totalNet: float = 0
+    projectName: str = "Expenses"
+
+
+@app.post("/rows-to-xlsx")
+def rows_to_xlsx(payload: RowsRequest) -> Response:
+    """Render the expense rows as a formatted .xlsx - openpyxl can style, SheetJS cannot."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = (payload.projectName or "Expenses")[:31]
+
+    thin = Side(style="thin", color="DFE3E8")
+    header_font = Font(bold=True, color="FFFFFF", size=10)
+    header_fill = PatternFill("solid", fgColor=ACCENT)
+    band_fill = PatternFill("solid", fgColor=BAND)
+    total_fill = PatternFill("solid", fgColor=TOTAL_BG)
+
+    # Header row
+    for index, (title, width, _kind) in enumerate(SHEET_COLUMNS, start=1):
+        cell = ws.cell(row=1, column=index, value=title)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
+        ws.column_dimensions[get_column_letter(index)].width = width
+    ws.row_dimensions[1].height = 26
+    ws.freeze_panes = "A2"
+
+    # Data rows
+    for offset, row in enumerate(payload.rows):
+        excel_row = 2 + offset
+        banded = offset % 2 == 1
+        for index, (title, _width, kind) in enumerate(SHEET_COLUMNS, start=1):
+            if kind == "spacer" or title == "TOTAL NET":
+                value = None
+            elif kind == "money":
+                try:
+                    value = float(row.get(title, 0) or 0)
+                except (TypeError, ValueError):
+                    value = 0.0
+            else:
+                value = row.get(title, "")
+            cell = ws.cell(row=excel_row, column=index, value=value)
+            cell.border = Border(bottom=thin)
+            if banded:
+                cell.fill = band_fill
+            if kind == "money":
+                cell.number_format = MONEY_FORMAT
+                cell.alignment = Alignment(horizontal="right")
+            else:
+                cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+
+    # Running total, anchored in K away from the data
+    total_column = len(SHEET_COLUMNS)
+    total_cell = ws.cell(row=2, column=total_column, value=float(payload.totalNet or 0))
+    total_cell.number_format = MONEY_FORMAT
+    total_cell.font = Font(bold=True, size=12, color=ACCENT)
+    total_cell.fill = total_fill
+    total_cell.alignment = Alignment(horizontal="right", vertical="center")
+    total_cell.border = Border(left=Side(style="medium", color=ACCENT), bottom=thin)
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="expenses.xlsx"'},
+    )
 
 
 @app.post("/office-to-images-base64")
