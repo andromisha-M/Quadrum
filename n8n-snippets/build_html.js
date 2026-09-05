@@ -14,6 +14,66 @@ const failed = entries.filter(e => e.status !== 'processed');
 const done = entries.filter(e => e.status === 'processed');
 const shaky = done.filter(e => Number(e.confidence) < 95);
 
+// --- duplicate detection -------------------------------------------------
+// Two signals, because the same invoice often arrives twice: once as the
+// supplier's PDF and once as its eFaktura/SEF export.
+function amountKey(e) {
+  const r = (e.rows || [])[0] || {};
+  return [Number(r['Net Cost']) || 0, Number(r['VAT']) || 0, String(r['Date'] || '')].join('|');
+}
+function nameStem(file) {
+  return String(file || '')
+    .toLowerCase()
+    .replace(/\.[a-z0-9]+$/, '')          // drop extension
+    .replace(/-extended-\d+/, '')          // drop the SEF export suffix
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+const dupGroups = [];
+const seenPairs = new Set();
+
+// same net + VAT + date, in different files
+const byAmount = new Map();
+for (const e of done) {
+  if (!(e.rows || []).length) continue;
+  const k = amountKey(e);
+  if (!byAmount.has(k)) byAmount.set(k, []);
+  byAmount.get(k).push(e);
+}
+for (const [, group] of byAmount) {
+  if (group.length > 1) {
+    dupGroups.push({ reason: 'identical amount, VAT and date', entries: group });
+    seenPairs.add(group.map(g => g.file).sort().join('||'));
+  }
+}
+
+// near-identical file names (ifu-95.pdf vs ifu-95-26-extended-1342....pdf)
+for (let i = 0; i < done.length; i++) {
+  for (let j = i + 1; j < done.length; j++) {
+    const a = nameStem(done[i].file), b = nameStem(done[j].file);
+    if (!a || !b || a.length < 4 || b.length < 4) continue;
+    if (a === b || a.startsWith(b) || b.startsWith(a)) {
+      const key = [done[i].file, done[j].file].sort().join('||');
+      if (!seenPairs.has(key)) {
+        seenPairs.add(key);
+        dupGroups.push({ reason: 'near-identical file names', entries: [done[i], done[j]] });
+      }
+    }
+  }
+}
+
+const duplicateFiles = new Set();
+for (const g of dupGroups) for (const e of g.entries) duplicateFiles.add(e.file);
+
+let dupNet = 0;
+for (const g of dupGroups) {
+  for (let i = 1; i < g.entries.length; i++) {
+    dupNet += Number(((g.entries[i].rows || [])[0] || {})['Net Cost']) || 0;
+  }
+}
+
+
 function esc(s) {
   return String(s === undefined || s === null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -57,7 +117,9 @@ for (const e of done) {
       + (i === 0
           ? '<td rowspan="' + Math.max(rows.length, 1) + '">' + fileCell(e) + '</td>'
           : '')
-      + '<td class="seller">' + esc(r['Seller / Service Provider'] || '') + '</td>'
+      + '<td class="seller">' + esc(r['Seller / Service Provider'] || '')
+        + (i === 0 && duplicateFiles.has(e.file) ? '<span class="dup">possible duplicate</span>' : '')
+      + '</td>'
       + '<td class="desc">' + esc(r['Description'] || '')
         + (r['Project'] ? '<span class="proj">' + esc(r['Project']) + '</span>' : '')
       + '</td>'
@@ -131,6 +193,17 @@ color:var(--red);border-radius:4px;padding:2px 7px;white-space:nowrap}
 .empty{color:var(--muted);font-style:italic;padding:14px;border:1px dashed var(--line);border-radius:10px}
 tfoot td{border-top:2px solid var(--ink);border-bottom:none;padding-top:13px;font-weight:680}
 tfoot .lbl{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.dup{display:inline-block;margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.04em;
+text-transform:uppercase;color:var(--amber);background:var(--amberbg);border:1px solid #f0d9ac;
+border-radius:4px;padding:1px 6px;vertical-align:1px}
+h2.warn2{color:var(--amber)}h2.warn2 .count{background:var(--amberbg);border-color:#f0d9ac;color:var(--amber)}
+.dupsec table{background:var(--amberbg);border:1px solid #f0d9ac;border-radius:10px;overflow:hidden}
+.dupsec th{color:var(--amber);border-bottom-color:#f0d9ac;padding-left:14px}
+.dupsec td{border-bottom-color:#f0d9ac;padding-left:14px}
+.dupsec .reason2{color:var(--amber);font-weight:600;white-space:nowrap}
+.lede{color:var(--muted);margin:0 0 10px;max-width:80ch;font-size:13.5px}
+.stat.warnstat{background:var(--amberbg);border-color:#f0d9ac}
+.stat.warnstat .v{color:var(--amber)}.stat.warnstat .k{color:var(--amber);opacity:.85}
 footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);
 font-size:12px;color:var(--muted)}
 @media print{body{padding:0}.stat{background:#fff!important}
@@ -154,8 +227,31 @@ const html = '<!doctype html><html lang="en"><head><meta charset="utf-8">'
 + '<div class="stat"><div class="v">' + totals.rowCount + '</div><div class="k">Rows in spreadsheet</div></div>'
 + '<div class="stat' + (failed.length ? ' alert' : '') + '"><div class="v">' + failed.length
   + '</div><div class="k">Need manual review</div></div>'
++ '<div class="stat' + (dupGroups.length ? ' warnstat' : '') + '"><div class="v">' + dupGroups.length
+  + '</div><div class="k">Possible duplicates</div></div>'
 + '</div>'
 
++ (dupGroups.length
+    ? '<section class="dupsec"><h2 class="warn2">Possible duplicates<span class="count">'
+      + dupGroups.length + '</span></h2>'
+      + '<p class="lede">These look like the same invoice counted more than once - commonly a supplier PDF '
+      + 'alongside its eFaktura export. Nothing has been removed. If confirmed, the spreadsheet total is '
+      + 'overstated by <strong>' + money(dupNet) + '</strong>.</p>'
+      + '<table><thead><tr><th>Files</th><th>Seller as read</th><th class="num">Net</th>'
+      + '<th class="num">VAT</th><th>Date</th><th>Why flagged</th></tr></thead><tbody>'
+      + dupGroups.map(g => g.entries.map((e, idx) => {
+          const r = (e.rows || [])[0] || {};
+          return '<tr class="dupe">'
+            + '<td>' + fileCell(e) + '</td>'
+            + '<td class="seller">' + esc(r['Seller / Service Provider'] || '') + '</td>'
+            + '<td class="num">' + money(r['Net Cost']) + '</td>'
+            + '<td class="num">' + money(r['VAT']) + '</td>'
+            + '<td class="date">' + esc(r['Date'] || '') + '</td>'
+            + (idx === 0 ? '<td rowspan="' + g.entries.length + '" class="reason2">' + esc(g.reason) + '</td>' : '')
+            + '</tr>';
+        }).join('')).join('')
+      + '</tbody></table></section>'
+    : '')
 + '<section class="fail"><h2' + (failed.length ? ' class="danger"' : '') + '>Needs manual review'
 + (failed.length ? '<span class="count">' + failed.length + '</span>' : '') + '</h2>'
 + (failed.length
